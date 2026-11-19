@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch RunHop",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/dist/runhop-extension"],
+      "outFiles": ["${workspaceFolder}/dist/runhop-extension/dist/**/*.js"],
+      "preLaunchTask": "npm: compile"
+    }
+  ]
+}

@@ -1,0 +1,544 @@
+// Adapted from SFTPresso 1.42.0 (MIT).
+// https://github.com/jmwerk/SFTPresso/blob/fda0e2e7341378e535f0336600127075c4d28758/src/core/transferTask.ts
+
+import { Readable } from 'stream';
+import { randomUUID } from 'node:crypto';
+import { CancellationTokenSource, CancellationToken, CancellationError } from 'vscode';
+import { FileSystem, isNotFoundError } from './fs';
+import { Task } from './scheduler';
+import logger from '../logger';
+
+let hasWarnedModifedTimePermission = false;
+
+export enum TransferDirection {
+  LOCAL_TO_REMOTE = 'local ➞ remote',
+  REMOTE_TO_LOCAL = 'remote ➞ local',
+}
+
+interface FileHandle {
+  fsPath: string;
+  fileSystem: FileSystem;
+}
+
+export interface TransferOption {
+  atime: number;
+  mtime: number;
+  mode?: number;
+  filePerm?: number;
+  dirPerm?: number;
+  fallbackMode?: number;
+  perserveTargetMode: boolean;
+  useTempFile?: boolean;
+  openSsh?: boolean;
+  // total size of the file in bytes, used to render transfer progress.
+  // undefined when unknown (progress then degrades to bytes-only).
+  size?: number;
+  // 'auto' (default) uses parallel-chunk transfer above PARALLEL_TRANSFER_THRESHOLD
+  // when the remote filesystem supports it, 'parallel' forces it whenever
+  // supported, 'stream' always uses the single-pipe path.
+  transferMode?: 'auto' | 'parallel' | 'stream';
+  // the batch's file-level concurrency (config.concurrency), used to scale
+  // per-file chunk concurrency down so the two don't multiply into an
+  // unbounded number of simultaneous outstanding requests.
+  batchConcurrency?: number;
+  // uploads only: awaited once before the first attempt touches the target (see
+  // src/core/backup.ts); a rejection fails the task and the target is never written
+  beforeOverwrite?: (targetFsPath: string, targetFs: FileSystem) => Promise<void>;
+}
+
+// files smaller than this transfer as a single stream even in 'auto' mode --
+// below it, parallel-chunk setup cost (multiple open/read/write round trips)
+// outweighs the latency win.
+const PARALLEL_TRANSFER_THRESHOLD = 256 * 1024;
+
+// upper bound on (per-file chunk concurrency) x (batch file concurrency), so
+// a batch of several large files transferring in parallel can't multiply into
+// an unbounded number of simultaneous outstanding requests against one
+// connection.
+const PARALLEL_CHUNK_BUDGET = 16;
+
+// throttle progress reporting to ~2 updates/sec per task
+const PROGRESS_REPORT_INTERVAL = 500;
+
+// number of throttled samples kept for the bytesPerSecond rolling window
+const PROGRESS_SAMPLE_WINDOW = 5;
+
+// no bytes for this long and the UI calls the transfer stalled; independent of
+// stallTimeout, which decides when to give up on it
+export const STALL_DISPLAY_THRESHOLD = 5000;
+
+interface ProgressSample {
+  time: number;
+  bytes: number;
+}
+
+// network/transport hiccups: the same transfer has a decent chance of working
+// on a fresh connection
+const RETRYABLE_ERROR_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTCONN']);
+
+// the transfer would fail the same way however many times we run it
+const FATAL_ERROR_CODES = new Set(['EACCES', 'ENOENT']);
+
+// SFTP_STATUS_CODE.PERMISSION_DENIED from ssh2
+const SFTP_PERMISSION_DENIED = 3;
+
+const RETRYABLE_MESSAGES = [
+  /no response from server/i,
+  // ssh2 tears the channel down under us when the connection drops
+  /channel (?:is )?(?:closed|open failure)/i,
+];
+
+const FATAL_MESSAGES = [/permission denied/i, /no such file/i];
+
+// Whether `error` looks transient enough to be worth transferring again.
+// Unknown errors are treated as fatal so we don't hammer a server that is
+// telling us something we don't understand.
+export function isRetryable(error: any): boolean {
+  if (!error) {
+    return false;
+  }
+
+  const code = error.code;
+  if (typeof code === 'string') {
+    if (FATAL_ERROR_CODES.has(code)) {
+      return false;
+    }
+    if (RETRYABLE_ERROR_CODES.has(code)) {
+      return true;
+    }
+  } else if (typeof code === 'number') {
+    if (code === SFTP_PERMISSION_DENIED) {
+      return false;
+    }
+  }
+
+  const message = typeof error.message === 'string' ? error.message : String(error);
+  if (FATAL_MESSAGES.some(pattern => pattern.test(message))) {
+    return false;
+  }
+  return RETRYABLE_MESSAGES.some(pattern => pattern.test(message));
+}
+
+export default class TransferTask implements Task {
+  private readonly _srcFsPath: string;
+  private readonly _targetFsPath: string;
+  private _srcFs: FileSystem;
+  private _targetFs: FileSystem;
+  private readonly _transferDirection: TransferDirection;
+  private readonly _TransferOption: TransferOption;
+  private _cancelTokenSource: CancellationTokenSource | undefined;
+  private _handle: Readable;
+  private _cancelled: boolean;
+  // retries must not back up the half-written file a failed attempt left behind
+  private _beforeOverwriteDone = false;
+  // private _fileStatus: FileStatus;
+
+  // how many times this task has been retried after a failure. Owned by the
+  // transfer scheduler, which bumps it as it re-queues the task; reset() leaves
+  // it alone so the retry budget survives a re-run.
+  attempts: number = 0;
+
+  // ms without a single byte moving before the transfer is given up on, or 0 to
+  // wait indefinitely. Set by the scheduler from config, which is why reset()
+  // leaves it alone -- it is policy, not per-run state.
+  stallTimeout: number = 0;
+
+  // armed while a transfer is running, poked by _reportProgress
+  private _stallTimer: ReturnType<typeof setTimeout> | undefined;
+  private _onStall: (() => void) | undefined;
+
+  // Progress sampled by the RunHop panel and notification.
+  transferredBytes: number = 0;
+  readonly totalBytes: number | undefined;
+  private _lastProgressReportAt: number = 0;
+  private _lastByteAt: number = 0;
+  // rolling window of recent (timestamp, transferredBytes) samples, oldest first
+  private _progressSamples: ProgressSample[] = [];
+
+  constructor(
+    src: FileHandle,
+    target: FileHandle,
+    option: {
+      transferDirection: TransferDirection;
+      transferOption: TransferOption;
+    }
+  ) {
+    this._srcFsPath = src.fsPath;
+    this._targetFsPath = target.fsPath;
+    this._srcFs = src.fileSystem;
+    this._targetFs = target.fileSystem;
+    this._TransferOption = option.transferOption;
+    this._transferDirection = option.transferDirection;
+    this.totalBytes = option.transferOption.size;
+  }
+
+  // Swaps in a freshly-resolved remote filesystem ahead of a retried attempt.
+  // The connection pool may have evicted the instance this task was built
+  // with; the retry path calls this after reconnecting and before re-queueing
+  // so the retry doesn't run against the dead instance. Only the remote side
+  // is ever pool-backed, so only it needs refreshing.
+  refreshRemoteFs(fs: FileSystem) {
+    if (this._transferDirection === TransferDirection.REMOTE_TO_LOCAL) {
+      this._srcFs = fs;
+    } else {
+      this._targetFs = fs;
+    }
+  }
+
+  // reset transient state so this task can be re-run (used by Retry)
+  reset() {
+    this._cancelled = false;
+    this._handle = undefined as any;
+    this.transferredBytes = 0;
+    this._lastProgressReportAt = 0;
+    this._lastByteAt = 0;
+    this._progressSamples = [];
+    if (this._cancelTokenSource) {
+      this._cancelTokenSource.dispose();
+    }
+    this._cancelTokenSource = undefined;
+  }
+
+  private _reportProgress(transferred: number) {
+    this.transferredBytes = transferred;
+    this._lastByteAt = Date.now();
+    // bytes are moving, so the connection is alive -- push the deadline out.
+    // Deliberately outside the throttle below: the watchdog cares that data
+    // arrived at all, not about the UI refresh rate.
+    this._armStallTimer();
+    const now = Date.now();
+    if (now - this._lastProgressReportAt >= PROGRESS_REPORT_INTERVAL) {
+      this._lastProgressReportAt = now;
+      this._progressSamples.push({ time: now, bytes: transferred });
+      if (this._progressSamples.length > PROGRESS_SAMPLE_WINDOW) {
+        this._progressSamples.shift();
+      }
+    }
+  }
+
+  // bytes started moving but nothing has arrived for a while
+  get isStalled(): boolean {
+    return (
+      this._lastByteAt > 0 &&
+      !this._cancelled &&
+      Date.now() - this._lastByteAt >= STALL_DISPLAY_THRESHOLD
+    );
+  }
+
+  // throughput over the current sample window, or undefined until at least
+  // 2 throttled samples have been recorded (~1s into the transfer). A stalled
+  // task reports 0 rather than the last window's rate, which would never update.
+  get bytesPerSecond(): number | undefined {
+    if (this.isStalled) {
+      return 0;
+    }
+    if (this._progressSamples.length < 2) {
+      return undefined;
+    }
+    const oldest = this._progressSamples[0];
+    const newest = this._progressSamples[this._progressSamples.length - 1];
+    const elapsedSeconds = (newest.time - oldest.time) / 1000;
+    if (elapsedSeconds <= 0) {
+      return undefined;
+    }
+    return (newest.bytes - oldest.bytes) / elapsedSeconds;
+  }
+
+  get localFsPath() {
+    if (this._transferDirection === TransferDirection.REMOTE_TO_LOCAL) {
+      return this._targetFsPath;
+    } else {
+      return this._srcFsPath;
+    }
+  }
+
+  get srcFsPath() {
+    return this._srcFsPath;
+  }
+
+  get targetFsPath() {
+    return this._targetFsPath;
+  }
+
+  get transferType() {
+    return this._transferDirection;
+  }
+
+  get token(): CancellationToken {
+    return this._ensureCancelTokenSource().token;
+  }
+
+  async run() {
+    if (this._cancelled) {
+      // cancelled while still queued, never started transferring
+      return;
+    }
+
+    await this._runBeforeOverwrite();
+    if (this._cancelled) {
+      return;
+    }
+
+    if (this.stallTimeout > 0) {
+      return this._withStallWatchdog(() => this._run());
+    }
+    return this._run();
+  }
+
+  private async _runBeforeOverwrite() {
+    const hook = this._TransferOption.beforeOverwrite;
+    if (
+      !hook ||
+      this._beforeOverwriteDone ||
+      this._transferDirection !== TransferDirection.LOCAL_TO_REMOTE
+    ) {
+      return;
+    }
+    try {
+      await hook(this._targetFsPath, this._targetFs);
+    } catch (error) {
+      // keep the code so a dropped connection is still retried
+      throw Object.assign(
+        new Error(`backup of ${this._targetFsPath} failed, not uploading: ${error.message}`),
+        { code: error.code }
+      );
+    }
+    this._beforeOverwriteDone = true;
+  }
+
+  // Fails a transfer that has stopped moving bytes, instead of waiting on it
+  // for good. A connection the server has dropped without saying so answers
+  // nothing and reports nothing, so there is no error to react to -- the only
+  // signal is the absence of progress.
+  private async _withStallWatchdog<T>(body: () => Promise<T>): Promise<T> {
+    const stalled = new Promise<never>((_, reject) => {
+      this._onStall = () => {
+        // unblock whatever is waiting on the stream so the transfer unwinds
+        // rather than sitting on a socket that will never answer
+        if (this._handle) {
+          FileSystem.abortReadableStream(this._handle);
+        }
+        // same for the parallel-chunk path, which has no stream to destroy --
+        // its in-flight chunk I/O is raced against this same token instead
+        if (this._cancelTokenSource) {
+          this._cancelTokenSource.cancel();
+        }
+        reject(
+          Object.assign(
+            new Error(
+              `transfer stalled: no data for ${this.stallTimeout}ms ` +
+                `(${this.transferredBytes} bytes transferred)`
+            ),
+            // classified retryable, so the scheduler re-runs it like any other
+            // dropped connection rather than reporting a hard failure
+            { code: 'ETIMEDOUT' }
+          )
+        );
+      };
+    });
+
+    this._armStallTimer();
+    try {
+      const work = body();
+      // the watchdog aborts the stream, so `work` usually rejects too, just
+      // after the race is already decided -- keep that from going unhandled
+      work.catch(() => undefined);
+      return await Promise.race([work, stalled]);
+    } finally {
+      this._clearStallTimer();
+      this._onStall = undefined;
+    }
+  }
+
+  private _armStallTimer() {
+    if (!this._onStall || this.stallTimeout <= 0) {
+      return;
+    }
+    this._clearStallTimer();
+    this._stallTimer = setTimeout(() => this._onStall!(), this.stallTimeout);
+  }
+
+  private _clearStallTimer() {
+    if (this._stallTimer) {
+      clearTimeout(this._stallTimer);
+      this._stallTimer = undefined;
+    }
+  }
+
+  private async _run() {
+    const source = this._srcFs;
+    const target = this._targetFs;
+    const token = this.token;
+    const destination = this._targetFsPath;
+    const { useTempFile, openSsh, fallbackMode, perserveTargetMode, filePerm, size } =
+      this._TransferOption;
+    const staging = useTempFile
+      ? target.pathResolver.join(
+          target.pathResolver.dirname(destination),
+          '.runhop-' + randomUUID() + '.new'
+        )
+      : destination;
+    const onProgress = (bytes: number) => {
+      if (!token.isCancellationRequested) {
+        this._reportProgress(bytes);
+      }
+    };
+    let mode = filePerm ? parseInt(String(filePerm), 8) : this._TransferOption.mode;
+    if (mode === undefined && perserveTargetMode) {
+      mode = await target.lstat(destination).then(
+        stat => stat.mode,
+        () => fallbackMode
+      );
+    }
+    let published = false;
+    try {
+      if (token.isCancellationRequested) {
+        throw new CancellationError();
+      }
+      const stream = () => this.copyStream(source, target, staging, token, mode, onProgress);
+      if (this._shouldUseParallelTransfer()) {
+        try {
+          const options = {
+            size: size ?? 0,
+            mode,
+            onProgress,
+            token,
+            concurrency: this._parallelChunkConcurrency(),
+          };
+          if (this._transferDirection === TransferDirection.REMOTE_TO_LOCAL) {
+            await source.getToFile(this._srcFsPath, staging, options);
+          } else {
+            await target.putFromFile(this._srcFsPath, staging, options);
+          }
+        } catch (error) {
+          if (token.isCancellationRequested || FileSystem.isAbortedError(error)) {
+            throw error;
+          }
+          logger.warn(
+            `Parallel transfer of ${this._srcFsPath} failed (${error.message}), retrying as a stream`
+          );
+          await stream();
+        }
+        if (this._TransferOption.atime && this._TransferOption.mtime) {
+          const handle = await target.open(staging, 'r+');
+          try {
+            await this.preserveTimes(target, handle);
+          } finally {
+            await target.close(handle);
+          }
+        }
+      } else {
+        await stream();
+      }
+      if (token.isCancellationRequested) {
+        throw new CancellationError();
+      }
+      if (useTempFile) {
+        if (openSsh) {
+          await target.renameAtomic(staging, destination);
+        } else {
+          await target.unlink(destination).catch(error => {
+            if (!isNotFoundError(error)) {
+              throw error;
+            }
+          });
+          await target.rename(staging, destination);
+        }
+      }
+      published = true;
+    } finally {
+      if (useTempFile && !published) {
+        await target.unlink(staging).catch(() => {});
+      }
+    }
+  }
+
+  cancel() {
+    if (this._cancelled) {
+      return;
+    }
+    this._cancelled = true;
+    this._clearStallTimer();
+    if (this._cancelTokenSource) {
+      this._cancelTokenSource.cancel();
+    }
+    if (this._handle) {
+      FileSystem.abortReadableStream(this._handle);
+    }
+  }
+
+  isCancelled(): boolean {
+    return this._cancelled;
+  }
+
+  dispose() {
+    if (this._cancelTokenSource) {
+      this._cancelTokenSource.dispose();
+    }
+  }
+
+  private _ensureCancelTokenSource(): CancellationTokenSource {
+    if (!this._cancelTokenSource) {
+      this._cancelTokenSource = new CancellationTokenSource();
+    }
+    return this._cancelTokenSource;
+  }
+
+  private _shouldUseParallelTransfer(): boolean {
+    const { transferMode, size } = this._TransferOption;
+    if (transferMode === 'stream') {
+      return false;
+    }
+    const remoteFs =
+      this._transferDirection === TransferDirection.REMOTE_TO_LOCAL ? this._srcFs : this._targetFs;
+    if (!remoteFs.supportsParallelTransfer()) {
+      return false;
+    }
+    if (transferMode === 'parallel') {
+      return true;
+    }
+    return typeof size === 'number' && size >= PARALLEL_TRANSFER_THRESHOLD;
+  }
+
+  private _parallelChunkConcurrency(): number {
+    const batchConcurrency = this._TransferOption.batchConcurrency || 1;
+    return Math.max(2, Math.floor(PARALLEL_CHUNK_BUDGET / Math.max(1, batchConcurrency)));
+  }
+
+  private async copyStream(
+    source: FileSystem,
+    target: FileSystem,
+    staging: string,
+    token: CancellationToken,
+    mode: number | undefined,
+    onProgress: (bytes: number) => void
+  ) {
+    const handle = await target.open(staging, 'w', mode);
+    try {
+      const stream = await source.get(this._srcFsPath);
+      if (token.isCancellationRequested) {
+        stream.destroy();
+        throw new CancellationError();
+      }
+      this._handle = stream;
+      await target.put(stream, staging, { fd: handle, autoClose: false, onProgress });
+      await this.preserveTimes(target, handle);
+    } finally {
+      await target.close(handle);
+    }
+  }
+
+  private async preserveTimes(target: FileSystem, handle: unknown) {
+    const { atime, mtime } = this._TransferOption;
+    if (atime && mtime) {
+      try {
+        await target.futimes(handle, Math.floor(atime / 1000), Math.floor(mtime / 1000));
+      } catch (error) {
+        if (!hasWarnedModifedTimePermission) {
+          hasWarnedModifedTimePermission = true;
+          logger.warn('Cannot set file timestamps: ' + error.message);
+        }
+      }
+    }
+  }
+}

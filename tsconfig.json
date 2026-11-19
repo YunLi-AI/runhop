@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "noUnusedLocals": true,
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["jest", "node"],
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "strictPropertyInitialization": false
+  },
+  "include": ["runhop/**/*.ts"]
+}

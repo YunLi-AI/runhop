@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RunHop configuration",
+  "definitions": {
+    "project": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/target"
+          },
+          "default": []
+        },
+        "interpreters": {
+          "type": "object",
+          "description": "Named Python executables on SSH targets.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path or executable name on the server."
+              },
+              "target": {
+                "type": "string",
+                "description": "Name of an SSH connection in targets."
+              },
+              "profile": {
+                "type": "string",
+                "description": "Optional SSH connection profile."
+              },
+              "condaExecutable": {
+                "type": "string",
+                "description": "Absolute path to the Conda executable for environments whose Conda installation cannot be discovered."
+              }
+            }
+          }
+        },
+        "defaultInterpreter": {
+          "type": "string",
+          "description": "Interpreter used by scripts without an override."
+        },
+        "uploadOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Upload eligible edited files when saved to the selected RunHop target."
+        },
+        "scripts": {
+          "type": "object",
+          "description": "Script options keyed by workspace-relative Python paths with forward slashes.",
+          "additionalProperties": {
+            "$ref": "#/definitions/script"
+          }
+        },
+        "runConfigurations": {
+          "type": "object",
+          "description": "Named presets for running and debugging a fixed Python script.",
+          "additionalProperties": {
+            "$ref": "#/definitions/runConfiguration"
+          }
+        },
+        "activeRunConfiguration": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Selected preset for toolbar Run and Debug. Omit to use the current Python file."
+        },
+        "syncMode": {
+          "type": "string",
+          "enum": ["incremental", "full", "off"],
+          "default": "incremental",
+          "description": "Incremental deploys once then uploads changed files. Full compares with the server each launch. Off skips launch sync."
+        }
+      },
+      "additionalProperties": false
+    },
+    "runConfiguration": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/script"
+        },
+        {
+          "type": "object",
+          "required": ["program"],
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Workspace-relative path of the Python script."
+            }
+          }
+        }
+      ]
+    },
+    "script": {
+      "type": "object",
+      "properties": {
+        "interpreter": {
+          "type": "string",
+          "description": "Name of a remote interpreter."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "One item per remote command-line argument."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Workspace-relative working directory mapped to the server."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "download": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "justMyCode": {
+          "type": "boolean"
+        },
+        "stopOnEntry": {
+          "type": "boolean"
+        },
+        "syncMode": {
+          "type": "string",
+          "enum": ["incremental", "full", "off"],
+          "description": "Override project synchronization for this script or named configuration."
+        },
+        "runOn": {
+          "type": "string",
+          "enum": ["local", "remote"],
+          "description": "Choose local VS Code Python or a RunHop SSH target. Omit to use a named remote interpreter or a mapped target when available."
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Server hostname or OpenSSH config alias."
+        },
+        "username": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "remotePath": {
+          "type": "string",
+          "description": "The remote project directory."
+        },
+        "privateKeyPath": {
+          "type": "string"
+        },
+        "passphrase": {
+          "type": "boolean",
+          "description": "Set true to prompt for an encrypted key."
+        },
+        "sshConfigPath": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Gitignore-style patterns excluded from startup sync and upload on save, relative to the connection context. Example: /datasets/."
+        },
+        "ignoreFile": {
+          "type": "string",
+          "description": "Path to an ignore file with rules shared by startup sync and upload on save."
+        }
+      }
+    },
+    "target": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/connection"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Use this name as the interpreter's optional target."
+            },
+            "context": {
+              "type": "string",
+              "description": "The local project directory within the workspace."
+            },
+            "defaultProfile": {
+              "type": "string"
+            },
+            "profiles": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/connection"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$ref": "#/definitions/project"
+}

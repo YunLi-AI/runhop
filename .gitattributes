@@ -1,0 +1,2 @@
+# RunHop executes these scripts through remote POSIX shells.
+*.sh text eol=lf

@@ -1,0 +1,492 @@
+{
+  "name": "runhop",
+  "displayName": "RunHop",
+  "description": "Synchronize a local workspace and run or debug Python on an SSH server.",
+  "version": "0.0.1",
+  "publisher": "yunli-ai",
+  "author": "YunLi AI",
+  "homepage": "https://github.com/YunLi-AI/runhop",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YunLi-AI/runhop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YunLi-AI/runhop/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.138.0",
+    "node": ">=22"
+  },
+  "main": "./dist/extension",
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onDebugResolve:runhop-python",
+    "workspaceContains:.vscode/runhop.json"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited"
+    }
+  },
+  "dependencies": {
+    "fs-extra": "^11.4.1",
+    "ignore": "^7.0.14",
+    "joi": "^18.3.2",
+    "jsonc-parser": "^3.3.1",
+    "ssh-config": "^5.3.0",
+    "ssh2": "^1.17.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "runhop.controls",
+        "title": "RunHop"
+      },
+      {
+        "command": "runhop.selectRunConfiguration",
+        "title": "Select Run Configuration",
+        "category": "RunHop",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "runhop.configure",
+        "title": "Open RunHop Configuration",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.selectTarget",
+        "title": "Select Remote Interpreter",
+        "category": "RunHop",
+        "icon": "$(server)"
+      },
+      {
+        "command": "runhop.editArguments",
+        "title": "Edit Script Arguments",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.openServerTerminal",
+        "title": "Open Terminal on Server",
+        "category": "RunHop",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "runhop.terminal.select",
+        "title": "Terminal Sessions",
+        "category": "RunHop",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "command": "runhop.run",
+        "title": "Run Python on Server",
+        "category": "RunHop",
+        "icon": "$(run)"
+      },
+      {
+        "command": "runhop.debug",
+        "title": "Debug Python on Server",
+        "category": "RunHop",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "runhop.breakpoints",
+        "title": "View Breakpoints",
+        "category": "RunHop",
+        "icon": "$(debug-breakpoint)"
+      },
+      {
+        "command": "runhop.project.upload",
+        "title": "Upload to Server…",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.project.download",
+        "title": "Download from Server…",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.project.syncMode",
+        "title": "Project Sync Mode…",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.project.settings",
+        "title": "Open Project Sync Settings",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.preview",
+        "title": "Preview Remote Value",
+        "category": "RunHop"
+      },
+      {
+        "command": "runhop.debug.stepIn",
+        "title": "Step Into",
+        "category": "RunHop",
+        "enablement": "runhop.debugCanStep"
+      },
+      {
+        "command": "runhop.debug.next",
+        "title": "Step Over",
+        "category": "RunHop",
+        "enablement": "runhop.debugCanStep"
+      },
+      {
+        "command": "runhop.debug.stepOut",
+        "title": "Step Out",
+        "category": "RunHop",
+        "enablement": "runhop.debugCanStep"
+      },
+      {
+        "command": "runhop.debug.continue",
+        "title": "Resume Program",
+        "category": "RunHop",
+        "enablement": "runhop.debugCanStep"
+      },
+      {
+        "command": "runhop.debug.stop",
+        "title": "Stop Debugging",
+        "category": "RunHop",
+        "enablement": "runhop.debugCanStop"
+      },
+      {
+        "command": "runhop.file.run",
+        "title": "RunHop: Run",
+        "icon": "$(run)"
+      },
+      {
+        "command": "runhop.file.debug",
+        "title": "RunHop: Debug",
+        "icon": "$(debug-alt)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "runhop.selectRunConfiguration",
+          "when": "resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)",
+          "group": "navigation@19"
+        },
+        {
+          "command": "runhop.controls",
+          "when": "resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)",
+          "group": "navigation@20"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "runhop.projectTransfers",
+          "when": "resourceScheme == file && isWorkspaceTrusted",
+          "group": "runhop"
+        },
+        {
+          "command": "runhop.file.run",
+          "when": "resourceScheme == file && resourceFilename =~ /\\.pyw?$/i && isWorkspaceTrusted && !explorerResourceIsFolder",
+          "group": "runhop@1"
+        },
+        {
+          "command": "runhop.file.debug",
+          "when": "resourceScheme == file && resourceFilename =~ /\\.pyw?$/i && isWorkspaceTrusted && !explorerResourceIsFolder",
+          "group": "runhop@2"
+        }
+      ],
+      "runhop.projectTransfers": [
+        {
+          "command": "runhop.project.upload",
+          "group": "1_transfer@1"
+        },
+        {
+          "command": "runhop.project.download",
+          "group": "1_transfer@2"
+        },
+        {
+          "command": "runhop.project.syncMode",
+          "when": "explorerResourceIsFolder",
+          "group": "2_settings@1"
+        },
+        {
+          "command": "runhop.project.settings",
+          "when": "explorerResourceIsFolder",
+          "group": "2_settings@2"
+        }
+      ],
+      "debug/variables/context": [
+        {
+          "command": "runhop.preview",
+          "when": "debugType == runhop-python",
+          "group": "z_commands@40"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "runhop.openServerTerminal",
+          "when": "view == runhop.terminal",
+          "group": "navigation@1"
+        },
+        {
+          "command": "runhop.terminal.select",
+          "when": "view == runhop.terminal",
+          "group": "navigation@2"
+        },
+        {
+          "command": "runhop.breakpoints",
+          "when": "view == runhop.terminal",
+          "group": "navigation@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "runhop.preview",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "runhop.file.run",
+          "when": "resourceScheme == file && resourceFilename =~ /\\.pyw?$/i && isWorkspaceTrusted",
+          "group": "runhop@1"
+        },
+        {
+          "command": "runhop.file.debug",
+          "when": "resourceScheme == file && resourceFilename =~ /\\.pyw?$/i && isWorkspaceTrusted",
+          "group": "runhop@2"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "runhop.projectTransfers",
+        "label": "RunHop"
+      }
+    ],
+    "views": {
+      "runhop-inspect": [
+        {
+          "id": "runhop.terminal",
+          "name": "Terminal",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "runhop-inspect",
+          "title": "RunHop",
+          "icon": "resources/server.svg"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "/.vscode/runhop.json",
+        "url": "./schema/runhop.schema.json"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "runhop-python",
+        "label": "RunHop Python on SSH",
+        "languages": [
+          "python"
+        ],
+        "initialConfigurations": [
+          {
+            "name": "RunHop: Python on SSH",
+            "type": "runhop-python",
+            "request": "launch",
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "RunHop: Python on SSH",
+            "body": {
+              "name": "RunHop: Python on SSH",
+              "type": "runhop-python",
+              "request": "launch",
+              "program": "${file}"
+            }
+          }
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to a local Python script covered by the RunHop target."
+              },
+              "module": {
+                "type": "string",
+                "description": "Python module to execute on the server."
+              },
+              "runConfiguration": {
+                "type": "string",
+                "description": "Name of a saved configuration in .vscode/runhop.json."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Local path mapped to the remote working directory."
+              },
+              "remotePython": {
+                "type": "string",
+                "default": "python3",
+                "description": "Python executable on the SSH server."
+              },
+              "target": {
+                "type": "string",
+                "description": "The connection name in .vscode/runhop.json."
+              },
+              "profile": {
+                "type": "string",
+                "description": "Optional profile in the RunHop connection."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {}
+              },
+              "download": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "File or folder paths relative to remotePath to fetch after the run."
+              },
+              "justMyCode": {
+                "type": "boolean",
+                "default": true
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false
+              },
+              "syncMode": {
+                "type": "string",
+                "enum": [
+                  "incremental",
+                  "full",
+                  "off"
+                ],
+                "description": "Override project source synchronization for this launch."
+              }
+            }
+          }
+        }
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "python"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "runhop.debug",
+        "key": "f5",
+        "when": "runhop.toolbarActive && resourceScheme == file && !inDebugMode && (editorLangId == python || runhop.namedConfigurationSelected)"
+      },
+      {
+        "command": "runhop.run",
+        "key": "ctrl+f5",
+        "when": "runhop.toolbarActive && resourceScheme == file && !inDebugMode && (editorLangId == python || runhop.namedConfigurationSelected)"
+      },
+      {
+        "command": "runhop.debug",
+        "key": "shift+f9",
+        "when": "runhop.toolbarActive && resourceScheme == file && !inDebugMode && (editorLangId == python || runhop.namedConfigurationSelected)"
+      },
+      {
+        "command": "runhop.run",
+        "key": "shift+f10",
+        "when": "runhop.toolbarActive && resourceScheme == file && !inDebugMode && (editorLangId == python || runhop.namedConfigurationSelected) && editorTextFocus"
+      },
+      {
+        "command": "runhop.debug.stepIn",
+        "key": "f7",
+        "when": "runhop.debugCanStep && inDebugMode && !terminalFocus && !inQuickOpen"
+      },
+      {
+        "command": "runhop.debug.next",
+        "key": "f8",
+        "when": "runhop.debugCanStep && inDebugMode && !terminalFocus && !inQuickOpen"
+      },
+      {
+        "command": "runhop.debug.stepOut",
+        "key": "shift+f8",
+        "when": "runhop.debugCanStep && inDebugMode && !terminalFocus && !inQuickOpen"
+      },
+      {
+        "command": "runhop.debug.continue",
+        "key": "f9",
+        "when": "runhop.debugCanStep && inDebugMode && !terminalFocus && !inQuickOpen"
+      },
+      {
+        "command": "runhop.debug.stop",
+        "key": "ctrl+f2",
+        "mac": "cmd+f2",
+        "when": "runhop.debugCanStop && inDebugMode && !terminalFocus && !inQuickOpen"
+      },
+      {
+        "command": "runhop.breakpoints",
+        "key": "ctrl+shift+f8",
+        "mac": "cmd+shift+f8",
+        "when": "(editorLangId == python || focusedView == runhop.terminal || debugType == runhop-python) && !inQuickOpen"
+      },
+      {
+        "command": "editor.debug.action.toggleBreakpoint",
+        "key": "ctrl+f8",
+        "mac": "cmd+f8",
+        "when": "editorTextFocus && editorLangId == python"
+      }
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint runhop",
+    "compile": "node runhop/build.mjs",
+    "package": "node runhop/build.mjs --package",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.6.6",
+    "@types/vscode": "~1.138.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.14.0",
+    "jest": "^30.5.2",
+    "prettier": "3.10.1",
+    "ts-jest": "^29.4.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1"
+  },
+  "jest": {
+    "transform": {
+      "^.+\\.ts$": "ts-jest"
+    },
+    "testMatch": [
+      "<rootDir>/runhop/**/*.spec.ts"
+    ],
+    "roots": [
+      "<rootDir>/runhop",
+      "<rootDir>/__mocks__"
+    ]
+  }
+}

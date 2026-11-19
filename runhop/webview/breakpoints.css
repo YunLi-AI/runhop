@@ -1,0 +1,321 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+#breakpoint-manager {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#breakpoint-manager [hidden] {
+  display: none;
+}
+
+#breakpoint-manager button,
+#breakpoint-manager input,
+#breakpoint-manager select {
+  font: inherit;
+}
+
+#breakpoint-manager button {
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+}
+
+#breakpoint-manager button:hover:enabled {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+#breakpoint-manager button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#breakpoint-manager :focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.bp-toolbar,
+.bp-location {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bp-toolbar {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+#breakpoint-manager h1,
+#breakpoint-manager h2 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+}
+
+#breakpoint-manager h1 {
+  margin-inline-end: 6px;
+}
+
+.bp-location h2 {
+  flex: 1 1 auto;
+}
+
+.bp-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(155px, 36%) minmax(0, 1fr);
+}
+
+.bp-navigation,
+.bp-detail {
+  min-width: 0;
+  min-height: 0;
+}
+
+.bp-navigation {
+  display: flex;
+  flex-direction: column;
+  border-inline-end: 1px solid var(--vscode-panel-border);
+}
+
+.bp-navigation input[type='search'] {
+  margin: 6px;
+}
+
+.bp-list,
+.bp-detail {
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.bp-list details summary {
+  cursor: pointer;
+  padding: 4px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--vscode-sideBarSectionHeader-background);
+}
+
+.bp-list summary span,
+.bp-list .bp-label {
+  padding-inline-start: 7px;
+  opacity: 0.75;
+}
+
+.bp-row {
+  display: flex;
+  align-items: stretch;
+  padding-inline-start: 14px;
+}
+
+#breakpoint-manager .bp-list button {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: start;
+  border-radius: 0;
+  padding: 4px 6px;
+  color: inherit;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#breakpoint-manager .bp-list button:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+#breakpoint-manager .bp-list button[aria-current='true'] {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.bp-list details details {
+  padding-inline-start: 10px;
+}
+.bp-list > details > summary {
+  font-weight: 600;
+}
+.bp-marker {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: 6px;
+  border-radius: 50%;
+  background-color: var(--vscode-debugIcon-breakpointForeground);
+}
+.bp-marker[data-kind='log'] {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+.bp-marker[data-kind='function'] {
+  border-radius: 1px;
+}
+.bp-marker[data-state='inactive'] {
+  background-color: var(--vscode-debugIcon-breakpointDisabledForeground);
+}
+.bp-marker[data-state='unverified'] {
+  box-sizing: border-box;
+  background-color: transparent;
+  border: 1px solid var(--vscode-debugIcon-breakpointUnverifiedForeground);
+}
+
+.bp-marker[data-state='verified'] {
+  box-shadow:
+    0 0 0 1px var(--vscode-editor-background),
+    0 0 0 2px var(--vscode-debugIcon-breakpointForeground);
+}
+
+.bp-compact-name {
+  display: none;
+}
+
+.bp-detail {
+  padding: 7px 10px;
+}
+
+.bp-location h2 {
+  overflow-wrap: anywhere;
+}
+
+.bp-status,
+.bp-warning {
+  margin: 5px 0 8px;
+  overflow-wrap: anywhere;
+  color: var(--vscode-descriptionForeground);
+}
+
+.bp-warning {
+  color: var(--vscode-editorWarning-foreground);
+}
+.bp-error {
+  color: var(--vscode-errorForeground);
+}
+.bp-session {
+  margin-inline-start: auto;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bp-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+.bp-notice {
+  flex: 1 1 auto;
+}
+.bp-menu {
+  position: fixed;
+  z-index: 1;
+  min-width: 135px;
+  display: grid;
+  padding: 3px;
+  background: var(--vscode-menu-background);
+  color: var(--vscode-menu-foreground);
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  box-shadow: 0 3px 8px var(--vscode-widget-shadow);
+}
+#breakpoint-manager .bp-menu button {
+  background: transparent;
+  color: inherit;
+  text-align: start;
+}
+#breakpoint-manager .bp-menu button:hover,
+#breakpoint-manager .bp-menu button:focus-visible {
+  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground);
+}
+
+.bp-form {
+  display: grid;
+  gap: 6px;
+}
+
+.bp-form label {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.bp-form label.bp-check {
+  display: flex;
+}
+
+#breakpoint-manager input:not([type='checkbox']),
+#breakpoint-manager select {
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  box-sizing: border-box;
+}
+
+#breakpoint-manager input[type='checkbox'] {
+  accent-color: var(--vscode-focusBorder);
+}
+
+#breakpoint-manager button[type='submit'] {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+#breakpoint-manager button[type='submit']:hover:enabled {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.bp-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: end;
+}
+
+@media (max-width: 500px) {
+  .bp-layout {
+    grid-template-columns: minmax(100px, 40%) minmax(0, 1fr);
+  }
+
+  .bp-form label {
+    grid-template-columns: 1fr;
+  }
+
+  .bp-list details summary {
+    white-space: normal;
+  }
+
+  .bp-list details details,
+  .bp-row {
+    padding-inline-start: 5px;
+  }
+
+  .bp-full-name {
+    display: none;
+  }
+
+  .bp-compact-name {
+    display: inline;
+  }
+}

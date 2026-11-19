@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { removeAllRemoteFs } from './transport/core/remoteFs';
 import { setManagedStorePath } from './transport/core/remote-client/hostKeyStore';
 import { registerLaunch } from './launch';
+import { registerConfigurations } from './configurationsPanel';
 import { registerPreview } from './preview';
 import { configure } from './targets';
 import { initializeTransport } from './transport/logger';
@@ -34,7 +35,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
-  registerLaunch(context, log, panel);
+  const activeConfigurationProject = registerConfigurations(context);
+  registerLaunch(context, log, panel, activeConfigurationProject);
   registerPreview(context);
   registerWorkbench(context, panel);
 }

@@ -6,8 +6,14 @@ import { isLocalPathAtOrUnder } from './paths';
 import { IncrementalSync, sourceFingerprint } from './incrementalSync';
 import { artifactPath } from './paths';
 import { transferWithRsync } from './rsync';
-import { isRecord, launchSyncMode, readSettings, Settings, updateSettings } from './settings';
-import { configure, projectTargets, resolveProjectTarget, RunHopTarget } from './targets';
+import {
+  isRecord,
+  launchSyncMode,
+  readOptionalSettings,
+  Settings,
+  updateSettings,
+} from './settings';
+import { projectTargets, resolveProjectTarget, RunHopTarget } from './targets';
 import {
   downloadProject,
   projectTransfer,
@@ -164,22 +170,22 @@ export function registerProjectSync(
             throw new Error('RunHop requires a trusted local project folder.');
           }
           if (action === 'settings') {
-            await configure(folder);
+            await vscode.commands.executeCommand('runhop.configurations', folder, {
+              section: 'sync',
+            });
             return;
           }
           const workspace = folder.uri.fsPath;
           log.appendLine('Project ' + action + ' · ' + (uri?.fsPath ?? workspace));
-          const settings = await readSettings(workspace).catch(async error => {
-            if (error.code !== 'ENOENT') {
-              throw error;
-            }
-            await configure(folder);
-          });
-          if (!settings) {
-            return;
-          }
+          const settings = (await readOptionalSettings(workspace)) ?? { targets: [] };
           if (action === 'syncMode') {
             await setSyncMode(folder, settings);
+            return;
+          }
+          if (!settings.targets.length) {
+            await vscode.commands.executeCommand('runhop.configurations', folder, {
+              section: 'servers',
+            });
             return;
           }
           const target = await selectTarget(workspace, resource?.fsPath ?? workspace, settings);

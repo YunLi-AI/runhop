@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import * as sshConfig from 'ssh-config';
 import Joi from 'joi';
 import { replaceHomePath } from '../../paths';
 import type { ConnectOption } from './remote-client';
+import { readSshConfiguration } from './sshConfiguration';
 
 export interface RetryOption {
   attempts: number;
@@ -59,6 +59,7 @@ const hopSchema = Joi.object({
 });
 const schema = Joi.object({
   ...authentication,
+  authentication: Joi.valid('sshConfig', 'key', 'agent', 'password'),
   host: string.required(),
   sshConfigPath: string,
   remotePath: string.default('.'),
@@ -82,17 +83,6 @@ const schema = Joi.object({
   ignore: Joi.array().items(string.allow('')).default([]),
   ignoreFile: string,
 });
-
-function sshDefaults(host: string, file: string, optional: boolean) {
-  try {
-    return sshConfig.parse(readFileSync(file, 'utf8')).compute(host, { ignoreCase: true });
-  } catch (error) {
-    if (optional && error.code === 'ENOENT') {
-      return {};
-    }
-    throw new Error('Unable to read SSH configuration ' + file + ': ' + error.message);
-  }
-}
 
 function toMilliseconds(value: unknown): number | undefined {
   const number = typeof value === 'string' && value.trim() ? Number(value) : NaN;
@@ -118,10 +108,9 @@ export function resolveConnection(
   if (error) {
     throw new Error('Invalid RunHop SSH target: ' + error.message);
   }
-  const sshFile = value.sshConfigPath
-    ? path.resolve(workspace, replaceHomePath(value.sshConfigPath))
-    : replaceHomePath('~/.ssh/config');
-  const ssh = sshDefaults(value.host, sshFile, !value.sshConfigPath);
+  const ssh = readSshConfiguration(workspace, value.sshConfigPath).compute(value.host, {
+    ignoreCase: true,
+  });
   const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
   const host = first(ssh.hostname) ?? value.host;
   const username = value.username ?? first(ssh.user);
@@ -130,9 +119,13 @@ export function resolveConnection(
     throw new Error('RunHop SSH target ' + host + ' requires a username and valid port.');
   }
 
-  const privateKey = value.privateKeyPath ?? first(ssh.identityfile);
+  const method = value.authentication;
+  const privateKey =
+    method === 'password' || method === 'agent'
+      ? undefined
+      : (value.privateKeyPath ?? first(ssh.identityfile));
   const privateKeyPath = privateKey && path.resolve(workspace, replaceHomePath(privateKey));
-  const agent = agentSocket(value.agent);
+  const agent = method === 'password' ? undefined : agentSocket(value.agent);
   const connectTimeout =
     value.connectTimeout ?? toMilliseconds(first(ssh.connecttimeout)) ?? 10_000;
   const auth = Object.fromEntries(
@@ -142,6 +135,7 @@ export function resolveConnection(
   );
   const connection: ConnectOption = {
     ...auth,
+    ...(method === 'password' ? { interactiveAuth: undefined, passphrase: undefined } : {}),
     host,
     port,
     username,
@@ -151,7 +145,7 @@ export function resolveConnection(
     keepaliveInterval: value.keepaliveInterval ?? toMilliseconds(first(ssh.serveraliveinterval)),
     hop: value.hop,
   };
-  const { ignore, ignoreFile, ...rest } = value;
+  const { ignore, ignoreFile, authentication: _method, ...rest } = value;
   const patterns = [...ignore];
   if (ignoreFile) {
     patterns.push(

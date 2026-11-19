@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { isLocalPathAtOrUnder } from './paths';
 import { AdapterLaunch, RemoteAdapter, SessionAdapter } from './adapter';
 import { registerControls } from './controls';
+import type { ConfigurationEditorProject } from './configurationsPanel';
 import { prepareDebugger, resolveRemotePath } from './debuggerHelper';
 import { DirectRun } from './directRun';
 import { registerFileLaunch } from './fileLaunch';
@@ -71,7 +72,7 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch>
     throw new Error('A named RunHop configuration already selects the Python program.');
   }
   const file = requested.program ? path.resolve(root.fsPath, requested.program) : undefined;
-  const { program, options, interpreter } = configuredScript(
+  const { program, module, options, interpreter } = configuredScript(
     settings,
     root.fsPath,
     file,
@@ -91,6 +92,7 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch>
     target: interpreter?.target,
     profile: interpreter?.profile,
     remotePython: interpreter?.path,
+    module,
     ...requested,
     program,
   };
@@ -209,7 +211,8 @@ export function replay(
 export function registerLaunch(
   context: vscode.ExtensionContext,
   log: vscode.OutputChannel,
-  panel: TerminalPanel
+  panel: TerminalPanel,
+  activeConfigurationProject: () => ConfigurationEditorProject | undefined
 ): void {
   const active = new Map<string, ActiveRun>();
   const transfers = new Map<string, Promise<void>>();
@@ -281,7 +284,7 @@ export function registerLaunch(
     uploads.clearFailures,
     incremental
   );
-  registerControls(context, log, debugType, panel);
+  registerControls(context, log, debugType, panel, activeConfigurationProject);
   registerFileLaunch(context, debugType);
   context.subscriptions.push(
     vscode.debug.onDidTerminateDebugSession(session => {

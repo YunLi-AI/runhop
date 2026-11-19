@@ -1,4 +1,4 @@
-import { readFile } from 'fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import * as path from 'path';
 import { applyEdits, modify, parse, ParseError, printParseErrorCode } from 'jsonc-parser';
 import * as vscode from 'vscode';
@@ -26,9 +26,8 @@ export interface ScriptOptions {
   syncMode?: SyncMode;
 }
 
-export interface RunConfiguration extends ScriptOptions {
-  program: string;
-}
+export type RunConfiguration = ScriptOptions &
+  ({ program: string; module?: never } | { program?: never; module: string });
 
 export interface Settings {
   targets: Connection[];
@@ -98,6 +97,18 @@ export function parseSettings(text: string): Settings {
 }
 
 export async function readSettings(workspace: string): Promise<Settings> {
+  return parseSettings(await readSettingsText(workspace));
+}
+
+export async function readOptionalSettings(workspace: string): Promise<Settings | undefined> {
+  try {
+    return await readSettings(workspace);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+export async function readSettingsText(workspace: string): Promise<string> {
   const file = path.join(workspace, settingsFile);
   const document = vscode.workspace.textDocuments.find(
     doc => doc.uri.fsPath === file && doc.isDirty
@@ -105,16 +116,14 @@ export async function readSettings(workspace: string): Promise<Settings> {
   if (document) {
     throw new Error('Save ' + settingsFile + ' before using RunHop.');
   }
-  const content = await readFile(file, 'utf8').catch(error => {
+  return readFile(file, 'utf8').catch(error => {
     if (error.code === 'ENOENT') {
-      throw Object.assign(
-        new Error('Run RunHop: Open RunHop Configuration to create ' + settingsFile + '.'),
-        { code: 'ENOENT' }
-      );
+      throw Object.assign(new Error('Run RunHop: Configurations to create ' + settingsFile + '.'), {
+        code: 'ENOENT',
+      });
     }
     throw error;
   });
-  return parseSettings(content);
 }
 
 export function scriptKey(workspace: string, program: string): string {
@@ -147,11 +156,16 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
     );
   }
   const config = settings.runConfigurations[name];
+  const validEntry =
+    config?.program === undefined
+      ? isPythonModule(config?.module)
+      : typeof config.program === 'string' &&
+        Boolean(config.program.trim()) &&
+        !config.program.includes('\0') &&
+        config.module === undefined;
   if (
     !isRecord(config) ||
-    typeof config.program !== 'string' ||
-    !config.program.trim() ||
-    config.program.includes('\0') ||
+    !validEntry ||
     !validRunLocation(config.runOn) ||
     (config.cwd !== undefined && (typeof config.cwd !== 'string' || config.cwd.includes('\0'))) ||
     (config.interpreter !== undefined && typeof config.interpreter !== 'string') ||
@@ -161,10 +175,14 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
     throw new Error(
       'Invalid RunHop run configuration ' +
         name +
-        '. Check its program, runOn, interpreter, cwd and syncMode.'
+        '. Check its script or module, runOn, interpreter, cwd and syncMode.'
     );
   }
   return config;
+}
+
+export function isPythonModule(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)*$/.test(value);
 }
 
 export function scriptLaunchOptions(
@@ -172,9 +190,9 @@ export function scriptLaunchOptions(
   workspace: string,
   file?: string,
   name?: string
-): { program?: string; options: ScriptOptions } {
+): { program?: string; module?: string; options: ScriptOptions } {
   const saved = name === undefined ? undefined : runConfigurationFor(settings, name);
-  const program = saved ? path.resolve(workspace, saved.program) : file;
+  const program = saved ? saved.program && path.resolve(workspace, saved.program) : file;
   const source = program ? optionsFor(settings, scriptKey(workspace, program)) : {};
   const options = saved
     ? {
@@ -183,7 +201,7 @@ export function scriptLaunchOptions(
         interpreter: saved.interpreter ?? source.interpreter,
       }
     : source;
-  return { program, options };
+  return { program, options, ...(saved?.module ? { module: saved.module } : {}) };
 }
 
 export function configuredScript(
@@ -191,15 +209,14 @@ export function configuredScript(
   workspace: string,
   file?: string,
   name?: string
-): { program?: string; options: ScriptOptions; interpreter?: Interpreter } {
-  const { program, options } = scriptLaunchOptions(settings, workspace, file, name);
+): { program?: string; module?: string; options: ScriptOptions; interpreter?: Interpreter } {
+  const selection = scriptLaunchOptions(settings, workspace, file, name);
   return {
-    program,
-    options,
+    ...selection,
     interpreter:
-      options.runOn === 'local'
+      selection.options.runOn === 'local'
         ? undefined
-        : interpreterFor(settings, options.interpreter ?? settings.defaultInterpreter),
+        : interpreterFor(settings, selection.options.interpreter ?? settings.defaultInterpreter),
   };
 }
 
@@ -234,29 +251,78 @@ export function interpreterFor(settings: Settings, name?: string): Interpreter |
   return entry;
 }
 
-type SettingEdit = { at: string[]; value: unknown };
+export type SettingEdit = { at: (string | number)[]; value: unknown };
 
-export async function updateSettings(
+const pendingEdits = new Map<string, Promise<void>>();
+
+export function applySettingsEdits(original: string, edits: SettingEdit[], eol = '\n'): string {
+  const formattingOptions = { insertSpaces: true, tabSize: 2, eol };
+  return edits.reduce(
+    (text, edit) => applyEdits(text, modify(text, edit.at, edit.value, { formattingOptions })),
+    original
+  );
+}
+
+export function updateSettings(
   folder: vscode.WorkspaceFolder,
-  changes: (settings: Settings) => SettingEdit[]
+  changes: (settings: Settings) => SettingEdit[],
+  expected?: string | null
 ): Promise<void> {
   const uri = vscode.Uri.joinPath(folder.uri, '.vscode', 'runhop.json');
+  const key = uri.toString();
+  const next = (pendingEdits.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => writeSettings(uri, changes, expected))
+    .finally(() => {
+      if (pendingEdits.get(key) === next) pendingEdits.delete(key);
+    });
+  pendingEdits.set(key, next);
+  return next;
+}
+
+async function writeSettings(
+  uri: vscode.Uri,
+  changes: (settings: Settings) => SettingEdit[],
+  expected?: string | null
+): Promise<void> {
+  const conflict = () => new Error('runhop.json changed. Reload before applying your changes.');
+  const missing =
+    expected === null ||
+    (expected === undefined &&
+      (await stat(uri.fsPath).then(
+        () => false,
+        error => {
+          if (error.code === 'ENOENT') return true;
+          throw error;
+        }
+      )));
+  if (missing) {
+    const original = '{}\n';
+    const text = applySettingsEdits(original, changes(parseSettings(original)));
+    if (text === original) return;
+    await mkdir(path.dirname(uri.fsPath), { recursive: true });
+    await writeFile(uri.fsPath, text, { flag: 'wx' }).catch(error => {
+      if (error.code === 'EEXIST') throw conflict();
+      throw error;
+    });
+    return;
+  }
   const document = await vscode.workspace.openTextDocument(uri);
   if (document.isDirty) {
     throw new Error('Save ' + settingsFile + ' before editing it through RunHop.');
   }
   const original = document.getText();
+  if (expected !== undefined && expected !== original) throw conflict();
   const settings = parseSettings(original);
   const edits = changes(settings);
   if (!edits.length) {
     return;
   }
-  const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-  const formattingOptions = { insertSpaces: true, tabSize: 2, eol };
-  let text = original;
-  for (const edit of edits) {
-    text = applyEdits(text, modify(text, edit.at, edit.value, { formattingOptions }));
-  }
+  const text = applySettingsEdits(
+    original,
+    edits,
+    document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'
+  );
   if (text !== original) {
     const edit = new vscode.WorkspaceEdit();
     edit.replace(

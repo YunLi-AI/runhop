@@ -54,8 +54,14 @@
         "icon": "$(list-selection)"
       },
       {
+        "command": "runhop.configurations",
+        "title": "Configurations",
+        "category": "RunHop",
+        "icon": "$(list-tree)"
+      },
+      {
         "command": "runhop.configure",
-        "title": "Open RunHop Configuration",
+        "title": "Open runhop.json",
         "category": "RunHop"
       },
       {
@@ -83,13 +89,13 @@
       },
       {
         "command": "runhop.run",
-        "title": "Run Python on Server",
+        "title": "Run Python",
         "category": "RunHop",
         "icon": "$(run)"
       },
       {
         "command": "runhop.debug",
-        "title": "Debug Python on Server",
+        "title": "Debug Python",
         "category": "RunHop",
         "icon": "$(debug-alt)"
       },
@@ -168,14 +174,14 @@
     "menus": {
       "editor/title": [
         {
-          "command": "runhop.selectRunConfiguration",
-          "when": "resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)",
-          "group": "navigation@19"
+          "command": "runhop.controls",
+          "when": "(resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)) || activeWebviewPanelId == runhop.configurations",
+          "group": "navigation@20"
         },
         {
-          "command": "runhop.controls",
-          "when": "resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)",
-          "group": "navigation@20"
+          "command": "runhop.configurations",
+          "when": "(resourceScheme == file && (resourceLangId == python || runhop.namedConfigurationSelected)) || activeWebviewPanelId == runhop.configurations",
+          "group": "navigation@21"
         }
       ],
       "explorer/context": [

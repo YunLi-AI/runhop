@@ -9,6 +9,37 @@ import { SFTPFileSystem } from './fs';
 import hostKeyPrompt from '../hostKeyPrompt';
 import logger from '../logger';
 
+function makeRemote(config: ServiceConfig) {
+  return new SFTPFileSystem(path.posix, {
+    clientOption: config.connection,
+    remoteTimeOffsetInHours: config.remoteTimeOffsetInHours,
+    operationTimeout: config.operationTimeout,
+  });
+}
+
+function authenticate(fs: SFTPFileSystem, config: ServiceConfig): Promise<void> {
+  return fs.connect(config.connection, {
+    askForPasswd: prompt =>
+      Promise.resolve(window.showInputBox({ prompt, password: true, ignoreFocusOut: true })),
+    hostKeyPrompt,
+  });
+}
+
+export async function withRemoteProbe<T>(
+  config: ServiceConfig,
+  probe: (fs: SFTPFileSystem) => Promise<T>
+): Promise<T> {
+  const fs = makeRemote(config);
+  // A failed probe must never disconnect a running session in the connection pool.
+  fs.onDisconnected(() => {});
+  try {
+    await authenticate(fs, config);
+    return await probe(fs);
+  } finally {
+    fs.end();
+  }
+}
+
 class Connection {
   private fs?: SFTPFileSystem;
   private acquiring?: Promise<SFTPFileSystem>;
@@ -52,11 +83,7 @@ class Connection {
       throw new Error('RunHop SSH connection was closed.');
     }
     if (!this.fs) {
-      const fs = new SFTPFileSystem(path.posix, {
-        clientOption: config.connection,
-        remoteTimeOffsetInHours: config.remoteTimeOffsetInHours,
-        operationTimeout: config.operationTimeout,
-      });
+      const fs = makeRemote(config);
       this.fs = fs;
       fs.onDisconnected((reason: string, error?: Error) => {
         if (this.fs === fs) {
@@ -68,11 +95,7 @@ class Connection {
         }
       });
       try {
-        await fs.connect(config.connection, {
-          askForPasswd: prompt =>
-            Promise.resolve(window.showInputBox({ prompt, password: true, ignoreFocusOut: true })),
-          hostKeyPrompt,
-        });
+        await authenticate(fs, config);
         if (this.fs !== fs || this.closed) {
           throw new Error('SSH connection closed during startup.');
         }

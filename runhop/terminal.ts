@@ -367,8 +367,8 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
   <div id="debug-drawer" hidden></div>
   <div id="empty">
     <p>No RunHop session is open.</p>
-    <button type="button" data-action="run">Run on Server</button>
-    <button type="button" data-action="debug">Debug on Server</button>
+    <button type="button" data-action="run">Run Python</button>
+    <button type="button" data-action="debug">Debug Python</button>
     <button type="button" data-action="shell">Open Terminal on Server</button>
   </div>
   <div id="terminal" hidden></div>
@@ -526,8 +526,8 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
 
   private async newSession(): Promise<void> {
     const options = [
-      { label: '$(play) Run on Server', command: 'runhop.run' },
-      { label: '$(debug-alt) Debug on Server', command: 'runhop.debug' },
+      { label: '$(play) Run Python', command: 'runhop.run' },
+      { label: '$(debug-alt) Debug Python', command: 'runhop.debug' },
       { label: '$(terminal) Open Terminal on Server', command: 'runhop.openServerTerminal' },
       {
         label: '$(list-selection) Select Run Configuration',

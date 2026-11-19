@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { readSettings, scriptKey, scriptLaunchOptions, Settings } from './settings';
+import { promptToConfigureRun } from './runConfigurations';
+import { readOptionalSettings, scriptKey, scriptLaunchOptions, Settings } from './settings';
 import { matchingTargets } from './targets';
 
 export function presetsForFile(settings: Settings, workspace: string, file: string): string[] {
@@ -19,22 +20,24 @@ export function presetsForFile(settings: Settings, workspace: string, file: stri
 export function fileRunsRemotely(
   settings: Settings | undefined,
   workspace: string,
-  file: string,
+  file: string | undefined,
   preset?: string
 ): boolean {
   if (!settings) return false;
-  const { options } = scriptLaunchOptions(settings, workspace, file, preset);
+  const { options, program } = scriptLaunchOptions(settings, workspace, file, preset);
+  const location = program ?? (options.cwd ? path.resolve(workspace, options.cwd) : workspace);
   if (options.runOn) return options.runOn === 'remote';
   return (
-    Boolean(options.interpreter) || matchingTargets(settings.targets, workspace, file).length > 0
+    Boolean(options.interpreter) ||
+    matchingTargets(settings.targets, workspace, location).length > 0
   );
 }
 
 export async function startLocalPython(
   folder: vscode.WorkspaceFolder,
-  program: string,
+  file: string | undefined,
   noDebug: boolean,
-  settings?: Settings,
+  settings: Settings,
   preset?: string
 ): Promise<boolean> {
   if (!vscode.extensions.getExtension('ms-python.debugpy')) {
@@ -42,14 +45,18 @@ export async function startLocalPython(
       'Enable the Python Debugger extension (ms-python.debugpy) to run Python locally.'
     );
   }
-  const options = settings
-    ? scriptLaunchOptions(settings, folder.uri.fsPath, program, preset).options
-    : {};
+  const { program, module, options } = scriptLaunchOptions(
+    settings,
+    folder.uri.fsPath,
+    file,
+    preset
+  );
+  if (!program && !module) throw new Error('Select a Python script or module to run.');
   const config: vscode.DebugConfiguration = {
     type: 'debugpy',
     request: 'launch',
-    name: 'Local · ' + (preset || path.basename(program)),
-    program,
+    name: 'Local · ' + (preset || module || path.basename(program!)),
+    ...(program ? { program } : { module }),
     cwd: options.cwd ? path.resolve(folder.uri.fsPath, options.cwd) : folder.uri.fsPath,
     args: options.args ?? [],
     env: options.env ?? {},
@@ -57,7 +64,7 @@ export async function startLocalPython(
     stopOnEntry: !noDebug && options.stopOnEntry === true,
     console: noDebug ? 'integratedTerminal' : 'internalConsole',
     internalConsoleOptions: 'neverOpen',
-    ...(settings ? { runhopUsesProjectSettings: true } : {}),
+    runhopUsesProjectSettings: true,
   };
   return vscode.debug.startDebugging(folder, config, { noDebug, suppressDebugView: true });
 }
@@ -86,11 +93,12 @@ export function registerFileLaunch(context: vscode.ExtensionContext, debugType: 
             throw new Error('Select a Python file in a trusted local workspace.');
           }
           const workspace = folder.uri.fsPath;
-          const settings = await readSettings(workspace).catch(error => {
-            if (error.code !== 'ENOENT') throw error;
-            return undefined;
-          });
-          const presets = settings ? presetsForFile(settings, workspace, uri.fsPath) : [];
+          const settings = await readOptionalSettings(workspace);
+          if (!settings) {
+            await promptToConfigureRun(folder, uri);
+            return;
+          }
+          const presets = presetsForFile(settings, workspace, uri.fsPath);
           const preset =
             presets.length > 1
               ? await vscode.window.showQuickPick(presets, {

@@ -5,7 +5,7 @@ import { stripVTControlCharacters } from 'util';
 import * as vscode from 'vscode';
 import { resolveRemotePath } from './debuggerHelper';
 import { mapProjectPath, quoteShell } from './paths';
-import { interpreterFor, readSettings, scriptLaunchOptions } from './settings';
+import { interpreterFor, readOptionalSettings, scriptLaunchOptions } from './settings';
 import { openChannel } from './sshChannel';
 import { connectSsh, resolveTarget } from './targets';
 import { TerminalPanel } from './terminal';
@@ -54,7 +54,16 @@ export async function openServerTerminal(
     return;
   }
   const workspace = folder.uri.fsPath;
-  const settings = await readSettings(workspace);
+  const settings = await readOptionalSettings(workspace);
+  if (!settings?.targets.length) {
+    await vscode.commands.executeCommand(
+      'runhop.configurations',
+      folder,
+      { section: 'servers' },
+      uri
+    );
+    return;
+  }
   const file =
     uri?.scheme === 'file' &&
     vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString()

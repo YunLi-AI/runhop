@@ -56,7 +56,7 @@
         },
         "runConfigurations": {
           "type": "object",
-          "description": "Named presets for running and debugging a fixed Python script.",
+          "description": "Named presets for running and debugging a Python script or module.",
           "additionalProperties": {
             "$ref": "#/definitions/runConfiguration"
           }
@@ -82,8 +82,13 @@
         },
         {
           "type": "object",
-          "required": ["program"],
+          "oneOf": [{ "required": ["program"] }, { "required": ["module"] }],
           "properties": {
+            "module": {
+              "type": "string",
+              "pattern": "^[A-Za-z_]\\w*(\\.[A-Za-z_]\\w*)*$",
+              "description": "Dotted Python module name, run as python -m."
+            },
             "program": {
               "type": "string",
               "minLength": 1,
@@ -166,6 +171,10 @@
         "passphrase": {
           "type": "boolean",
           "description": "Set true to prompt for an encrypted key."
+        },
+        "authentication": {
+          "enum": ["sshConfig", "key", "agent", "password"],
+          "description": "How RunHop authenticates the SSH connection. Passwords are entered through VS Code."
         },
         "sshConfigPath": {
           "type": "string"

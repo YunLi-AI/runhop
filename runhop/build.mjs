@@ -46,7 +46,7 @@ execFileSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
 });
 await esbuild.build({
   absWorkingDir: webview,
-  entryPoints: ['terminal.js', 'breakpoints.js'],
+  entryPoints: ['terminal.js', 'breakpoints.js', 'configurations.js'],
   outdir: path.join(stage, 'resources'),
   platform: 'browser',
   bundle: true,

@@ -1,0 +1,137 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  color: var(--vscode-foreground);
+  background: var(--vscode-panel-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+#empty {
+  margin: 8px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#empty p {
+  margin: 0 0 8px;
+}
+
+#empty button {
+  margin: 0 5px 4px 0;
+  padding: 3px 8px;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+  border-radius: 2px;
+  font: inherit;
+}
+
+#empty button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+#execution-bar {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 30px;
+  padding: 0 5px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  min-width: 0;
+}
+
+#execution-tabs {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.execution-tab {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  max-width: min(260px, 78vw);
+  border-inline-end: 1px solid var(--vscode-panel-border);
+  border-bottom: 2px solid transparent;
+}
+
+.execution-tab[data-selected='true'] {
+  border-bottom-color: var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder));
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+#execution-bar button {
+  background: transparent;
+  border: 0;
+  color: var(--vscode-foreground);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#execution-bar button:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+#execution-bar button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
+.execution-tab [role='tab'] {
+  display: flex;
+  align-items: center;
+  padding: 0 7px;
+  min-width: 0;
+}
+
+.execution-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.execution-phase {
+  white-space: pre;
+  color: var(--vscode-descriptionForeground);
+}
+
+[role='tab'][data-phase='Paused'] .execution-phase {
+  color: var(--vscode-debugIcon-pauseForeground, var(--vscode-foreground));
+}
+
+[role='tab'][data-phase='Failed'] .execution-phase,
+[role='tab'][data-phase='Exception'] .execution-phase {
+  color: var(--vscode-errorForeground);
+}
+
+#execution-bar .execution-tab-close,
+#execution-bar #execution-new {
+  flex: 0 0 25px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+#terminal {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 4px;
+  overflow: hidden;
+}
+
+body:has(#debugger:not([hidden])) #terminal {
+  flex: calc(100 - var(--debug-top, 59)) 1 0;
+  min-height: 42px;
+}

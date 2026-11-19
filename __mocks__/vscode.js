@@ -1,4 +1,9 @@
-const l10n = require('../test/helper/vscodeL10n');
+// Adapted from SFTPresso 1.42.0 (MIT).
+// https://github.com/jmwerk/SFTPresso/blob/fda0e2e7341378e535f0336600127075c4d28758/__mocks__/vscode.js
+
+const l10n = {
+  t: (message, ...args) => message.replace(/\{(\d+)\}/g, (token, index) => args[index] ?? token),
+};
 
 const Nothing = (() => {
   // A function declaration rather than an arrow: parts of the API are used
@@ -62,6 +67,9 @@ const Nothing = (() => {
         };
       }
       // Real formatting, so tests can assert on user-facing messages.
+      if (key === 'CancellationError') {
+        return class CancellationError extends Error {};
+      }
       if (key === 'l10n') {
         return l10n;
       }

@@ -1,80 +1,17 @@
-name: CI
+name: RunHop CI
 
-on:
-  push:
-    branches: [ develop ]
-  pull_request:
-    branches: [ develop, main ]
+on: [push, pull_request]
 
 jobs:
-  build-and-test:
+  verify:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [22.x, 24.x]
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Format check
-        run: npm run format:check
-
-      # l10n.t() strings must match the committed bundle translators work from
-      - name: L10n bundle check
-        run: npm run l10n:export && git diff --exit-code -- l10n
-
-      - name: Build
-        run: npm run compile
-
-      - name: Test
-        run: npm test
-
-      # Catches manifest errors (e.g. @types/vscode ahead of engines.vscode) before release
-      - name: Package
-        run: npx @vscode/vsce package --out "$RUNNER_TEMP/sftpresso.vsix"
-
-  integration-tests:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Use Node.js 22
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22.x
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Start test servers
-        # Generates the throwaway ssh keypair, then brings up the FTP and SSH
-        # containers. --wait blocks until every container reports healthy
-        # (compose healthchecks), so no fixed sleeps are needed.
-        run: npm run test:integration:up
-
-      - name: Run integration tests
-        run: npm run test:integration
-
-      - name: Stop test servers
-        if: always()
-        run: npm run test:integration:down
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --runInBand
+      - run: npm run package

@@ -439,6 +439,16 @@ export function mountWorkbench(vscode, outputVisibility, executionCommand) {
       rows.push(wrapper);
       if (node.open) {
         variablesRows(node.children || [], rows, depth + 1);
+        if (node.more) {
+          rows.push(
+            button(
+              'Load more variables',
+              'variablesMore',
+              { node: node.id },
+              'debug-row frame muted'
+            )
+          );
+        }
         if (node.loading || node.error || node.limited) {
           rows.push(
             line(

@@ -98,6 +98,7 @@ export class SessionTerminal {
       this.shell = undefined;
       if (this.execution) {
         this.execution.stop = undefined;
+        this.execution.input = undefined;
       }
       this.changed(undefined, undefined, outcome);
       this.complete(outcome);
@@ -372,6 +373,11 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
     <button type="button" data-action="shell">Open Terminal on Server</button>
   </div>
   <div id="terminal" hidden></div>
+  <form id="program-input" hidden>
+    <input type="text" id="program-line" aria-label="Program input" placeholder="Program input" maxlength="4096" autocomplete="off">
+    <button type="submit">Send</button>
+    <button type="button" id="program-eof" title="Close standard input">Send EOF</button>
+  </form>
   <script nonce="${nonce}" src="${uri('terminal.js')}"></script>
 </body>
 </html>`;
@@ -435,6 +441,25 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
       case 'rerunSession':
         if (session && message.id === session.id && message.executionId === session.execution?.id) {
           void this.rerun(session).catch(error => this.showError(error));
+        }
+        break;
+      case 'programInput':
+      case 'programEof':
+        if (
+          session?.phase === 'Running' &&
+          message.id === session.id &&
+          message.executionId === session.execution?.id &&
+          session.execution?.input
+        ) {
+          if (message.type === 'programEof') {
+            session.execution.input(null);
+          } else if (
+            typeof message.data === 'string' &&
+            message.data.length <= 4096 &&
+            !/[\r\n]/.test(message.data)
+          ) {
+            session.execution.input(message.data);
+          }
         }
         break;
       case 'closeSession': {
@@ -598,6 +623,7 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
           executionId: active.execution?.id,
           ...(replay ? { history: active.history } : {}),
           writable: Boolean(active.ready && active.shell),
+          canInput: Boolean(active.phase === 'Running' && active.execution?.input),
         },
         focus,
       });

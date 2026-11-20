@@ -1,9 +1,11 @@
-import type { Client, ClientChannel } from 'ssh2';
+import type { EventEmitter } from 'node:events';
+import type { Readable, Writable } from 'node:stream';
+import type { ClientChannel } from 'ssh2';
 import * as vscode from 'vscode';
 import { BreakpointMute } from './breakpointMute';
-import { quoteShell } from './paths';
+import { spawnPython, stopLocalProcess } from './localProcess';
 import { DebugMessage, DebugMessageReader, encodeMessage } from './protocol';
-import { openChannel, shutdownTimeout, startupTimeout } from './sshChannel';
+import { shutdownTimeout, startupTimeout } from './sshChannel';
 import { SessionTerminal } from './terminal';
 import { Outcome, exitOutcome } from './sessionState';
 
@@ -17,8 +19,7 @@ export interface PythonLaunch {
 }
 
 export interface AdapterLaunch extends PythonLaunch {
-  localRoot: string;
-  remoteRoot: string;
+  pathMapping?: { localRoot: string; remoteRoot: string };
   justMyCode: boolean;
   stopOnEntry: boolean;
 }
@@ -31,7 +32,15 @@ const adapterBootstrap =
   'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); ' +
   'runpy.run_module("debugpy.adapter", run_name="__main__", alter_sys=True)';
 
-export class RemoteAdapter implements SessionAdapter {
+interface AdapterTransport {
+  events: Pick<EventEmitter, 'on' | 'off' | 'once'>;
+  stdout: Readable;
+  stderr: Readable;
+  stdin: Writable;
+  close(): void;
+}
+
+export class PythonAdapter implements SessionAdapter {
   private readonly emitter = new vscode.EventEmitter<DebugMessage>();
   private readonly reader = new DebugMessageReader();
   private readonly requests = new Map<
@@ -60,26 +69,59 @@ export class RemoteAdapter implements SessionAdapter {
   private detach?: () => void;
   readonly onDidSendMessage = this.emitter.event;
 
-  static async start(
-    client: Client,
+  static startRemote(
+    channel: ClientChannel,
+    plan: AdapterLaunch,
+    terminal: SessionTerminal,
+    log: vscode.OutputChannel
+  ): PythonAdapter {
+    const adapter = new PythonAdapter(
+      {
+        events: channel,
+        stdout: channel,
+        stderr: channel.stderr,
+        stdin: channel,
+        close: () => channel.close(),
+      },
+      plan,
+      terminal,
+      log
+    );
+    channel.resume();
+    return adapter;
+  }
+
+  static startLocal(
     plan: AdapterLaunch,
     helper: string,
     terminal: SessionTerminal,
     log: vscode.OutputChannel
-  ): Promise<RemoteAdapter> {
-    const command =
-      'exec ' + [plan.python, '-I', '-u', '-c', adapterBootstrap, helper].map(quoteShell).join(' ');
-    return new RemoteAdapter(await openChannel(client, command), plan, terminal, log);
+  ): PythonAdapter {
+    const child = spawnPython(plan, ['-I', '-u', '-c', adapterBootstrap, helper], true);
+    // The adapter can close its pipe before processing a pending request.
+    child.stdin.on('error', error => child.emit('error', error));
+    return new PythonAdapter(
+      {
+        events: child,
+        stdout: child.stdout,
+        stderr: child.stderr,
+        stdin: child.stdin,
+        close: () => stopLocalProcess(child),
+      },
+      plan,
+      terminal,
+      log
+    );
   }
 
   private constructor(
-    private readonly channel: ClientChannel,
+    private readonly channel: AdapterTransport,
     private readonly plan: AdapterLaunch,
     private readonly terminal: SessionTerminal,
     private readonly log: vscode.OutputChannel
   ) {
     this.handshake = setTimeout(() => {
-      this.fail('The server did not complete the debugpy handshake.');
+      this.fail('debugpy did not complete the handshake.');
       this.forceClose();
     }, startupTimeout);
 
@@ -102,16 +144,16 @@ export class RemoteAdapter implements SessionAdapter {
       this.forceClose();
     };
     const close = () => this.finish();
-    channel.on('data', data);
+    channel.stdout.on('data', data);
     channel.stderr.on('data', stderr);
-    channel.on('error', failure);
-    channel.once('close', close);
+    channel.events.on('error', failure);
+    channel.events.once('close', close);
     this.detach = () => {
-      channel.off('data', data);
+      channel.stdout.off('data', data);
       channel.stderr.off('data', stderr);
-      channel.off('error', failure);
-      channel.off('close', close);
-      channel.on('error', ignoreLateChannelError);
+      channel.events.off('error', failure);
+      channel.events.off('close', close);
+      channel.events.on('error', ignoreLateChannelError);
     };
   }
 
@@ -213,7 +255,7 @@ export class RemoteAdapter implements SessionAdapter {
         this.rejectRequest(
           message.seq,
           message.command!,
-          this.failure || 'The SSH channel is closed.'
+          this.failure || 'The debugger connection is closed.'
         );
       }
       return;
@@ -272,14 +314,14 @@ export class RemoteAdapter implements SessionAdapter {
       return;
     }
     if (message.command === 'launch') {
-      const { localRoot, remoteRoot, python, ...launch } = this.plan;
+      const { pathMapping, python, ...launch } = this.plan;
       message.arguments = {
         ...launch,
         python: [python],
         console: 'internalConsole',
         redirectOutput: true,
         subProcess: false,
-        pathMappings: [{ localRoot, remoteRoot }],
+        ...(pathMapping ? { pathMappings: [pathMapping] } : {}),
       };
     }
     if (message.command === 'disconnect') {
@@ -301,7 +343,7 @@ export class RemoteAdapter implements SessionAdapter {
       this.requests.set(seq, { seq: message.seq, command: message.command, reply });
       message = { ...message, seq };
     }
-    this.channel.write(encodeMessage(message));
+    this.channel.stdin.write(encodeMessage(message));
     return message.seq;
   }
 
@@ -348,13 +390,13 @@ export class RemoteAdapter implements SessionAdapter {
 
   private endChannel(): void {
     if (!this.closed) {
-      this.channel.end();
+      this.channel.stdin.end();
       this.armCloseTimeout();
     }
   }
 
   private forceClose(): void {
-    this.channel.end();
+    this.channel.stdin.end();
     this.channel.close();
     this.finish();
   }
@@ -375,9 +417,7 @@ export class RemoteAdapter implements SessionAdapter {
       outcome = { phase: 'Exited', detail: 'The debug session was stopped.' };
     } else {
       const detail =
-        this.failure ||
-        this.stderr.trim() ||
-        'The SSH debugger closed without confirming Python exit.';
+        this.failure || this.stderr.trim() || 'The debugger closed without confirming Python exit.';
       outcome = { phase: this.started ? 'Disconnected' : 'Failed', detail };
       this.fail(detail);
     }

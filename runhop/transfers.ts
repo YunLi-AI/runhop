@@ -226,7 +226,9 @@ export function requireSavedProjectFiles(
   );
   if (pending) {
     throw new Error(
-      'Save ' + path.basename(pending.uri.fsPath) + ' before synchronizing project files.'
+      'Save ' +
+        path.basename(pending.uri.fsPath) +
+        ' before syncing, running or debugging with RunHop.'
     );
   }
 }

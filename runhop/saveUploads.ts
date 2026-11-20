@@ -1,7 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isLocalPathAtOrUnder } from './paths';
-import { IncrementalSync, sourceFingerprint } from './incrementalSync';
 import { artifactPath } from './paths';
 import {
   interpreterFor,
@@ -20,8 +19,7 @@ export function registerSaveUploads(
   context: vscode.ExtensionContext,
   log: vscode.OutputChannel,
   queueTransfer: (key: string, transfer: () => Promise<void>) => Promise<void>,
-  excludeOutputs: (key: string, outputs: string[]) => string[],
-  incremental: IncrementalSync
+  excludeOutputs: (key: string, outputs: string[]) => string[]
 ) {
   const pending = new Set<{ workspace: string; upload: Promise<QueuedUpload | undefined> }>();
   const failures = new Map<string, Map<string, string>>();
@@ -86,11 +84,7 @@ export function registerSaveUploads(
       const project = projectTransfer(target);
       const destination = failureKey(workspace, key);
       try {
-        const fingerprint = await sourceFingerprint(file);
         if (await uploadSavedFile(project, file, cancellation.token)) {
-          if (fingerprint !== undefined) {
-            await incremental.rememberUpload(target, file, fingerprint);
-          }
           log.appendLine(
             'Uploaded ' + path.relative(workspace, file) + ' to ' + target.config.host
           );

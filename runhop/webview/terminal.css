@@ -39,6 +39,29 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+#program-input {
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+#program-input input {
+  flex: 1;
+  min-width: 0;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  font: inherit;
+}
+
+#program-input button {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+  font: inherit;
+}
+
 #execution-bar {
   display: flex;
   align-items: stretch;

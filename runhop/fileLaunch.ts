@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { localLaunchKey } from './localPython';
 import { promptToConfigureRun } from './runConfigurations';
 import { readOptionalSettings, scriptKey, scriptLaunchOptions, Settings } from './settings';
 import { matchingTargets } from './targets';
@@ -34,39 +35,29 @@ export function fileRunsRemotely(
 }
 
 export async function startLocalPython(
+  debugType: string,
   folder: vscode.WorkspaceFolder,
   file: string | undefined,
   noDebug: boolean,
   settings: Settings,
-  preset?: string
+  preset?: string,
+  selectedFile?: string
 ): Promise<boolean> {
-  if (!vscode.extensions.getExtension('ms-python.debugpy')) {
-    throw new Error(
-      'Enable the Python Debugger extension (ms-python.debugpy) to run Python locally.'
-    );
-  }
-  const { program, module, options } = scriptLaunchOptions(
-    settings,
-    folder.uri.fsPath,
-    file,
-    preset
-  );
+  const { program, module } = scriptLaunchOptions(settings, folder.uri.fsPath, file, preset);
   if (!program && !module) throw new Error('Select a Python script or module to run.');
   const config: vscode.DebugConfiguration = {
-    type: 'debugpy',
+    type: debugType,
     request: 'launch',
     name: 'Local · ' + (preset || module || path.basename(program!)),
-    ...(program ? { program } : { module }),
-    cwd: options.cwd ? path.resolve(folder.uri.fsPath, options.cwd) : folder.uri.fsPath,
-    args: options.args ?? [],
-    env: options.env ?? {},
-    justMyCode: options.justMyCode ?? true,
-    stopOnEntry: !noDebug && options.stopOnEntry === true,
-    console: noDebug ? 'integratedTerminal' : 'internalConsole',
-    internalConsoleOptions: 'neverOpen',
-    runhopUsesProjectSettings: true,
+    ...(preset ? { runConfiguration: preset, runhopSelectedFile: selectedFile } : { program }),
+    [localLaunchKey]: true,
+    noDebug,
   };
-  return vscode.debug.startDebugging(folder, config, { noDebug, suppressDebugView: true });
+  return vscode.debug.startDebugging(folder, config, {
+    noDebug,
+    suppressDebugView: true,
+    suppressSaveBeforeStart: true,
+  });
 }
 
 export function registerFileLaunch(context: vscode.ExtensionContext, debugType: string): void {
@@ -107,7 +98,15 @@ export function registerFileLaunch(context: vscode.ExtensionContext, debugType: 
               : presets[0];
           if (presets.length > 1 && preset === undefined) return;
           if (!fileRunsRemotely(settings, workspace, uri.fsPath, preset)) {
-            await startLocalPython(folder, uri.fsPath, noDebug, settings, preset);
+            await startLocalPython(
+              debugType,
+              folder,
+              uri.fsPath,
+              noDebug,
+              settings,
+              preset,
+              uri.fsPath
+            );
             return;
           }
           await vscode.debug.startDebugging(

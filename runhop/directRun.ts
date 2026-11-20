@@ -3,6 +3,7 @@ import { StringDecoder } from 'string_decoder';
 import type { Client, ClientChannel } from 'ssh2';
 import * as vscode from 'vscode';
 import type { PythonLaunch, SessionAdapter } from './adapter';
+import { spawnPython, stopLocalProcess } from './localProcess';
 import { quoteShell } from './paths';
 import type { DebugMessage } from './protocol';
 import { openChannel, shutdownTimeout } from './sshChannel';
@@ -37,13 +38,14 @@ export class DirectRun implements SessionAdapter {
   private disposed = false;
   private done = false;
   private channel?: ClientChannel;
+  private stopLocal?: () => void;
   private detach?: () => void;
   private closeTimer?: NodeJS.Timeout;
   private complete!: (outcome: Outcome) => void;
   readonly completion = new Promise<Outcome>(resolve => (this.complete = resolve));
 
   constructor(
-    private readonly client: Client,
+    private readonly client: Client | undefined,
     private readonly plan: PythonLaunch,
     private readonly terminal: SessionTerminal,
     private readonly log: vscode.OutputChannel
@@ -78,8 +80,12 @@ export class DirectRun implements SessionAdapter {
 
   private async launch(request: DebugMessage): Promise<void> {
     this.started = true;
-    const token = randomBytes(12).toString('hex');
     try {
+      if (!this.client) {
+        this.launchLocal(request);
+        return;
+      }
+      const token = randomBytes(12).toString('hex');
       const channel = await openChannel(this.client, commandFor(this.plan, token));
       if (this.done) {
         channel.end();
@@ -156,6 +162,53 @@ export class DirectRun implements SessionAdapter {
     }
   }
 
+  private launchLocal(request: DebugMessage): void {
+    const entry = this.plan.program ? [this.plan.program] : ['-m', this.plan.module!];
+    const child = spawnPython(this.plan, ['-u', ...entry, ...this.plan.args]);
+    const execution = this.terminal.execution;
+    const closeInput = () => {
+      if (execution?.input) {
+        execution.input = undefined;
+        this.terminal.refresh();
+      }
+    };
+    child.stdin.on('error', closeInput);
+    child.stdin.once('close', closeInput);
+    child.stdout.setEncoding('utf8').on('data', text => this.terminal.write(text));
+    child.stderr.setEncoding('utf8').on('data', text => this.terminal.write(text));
+    this.stopLocal = () => stopLocalProcess(child);
+    child.once('spawn', () => {
+      if (!this.stopping && execution && child.stdin.writable) {
+        execution.input = line => {
+          if (line === null) {
+            closeInput();
+            child.stdin.end();
+          } else if (child.stdin.writableNeedDrain) {
+            this.terminal.write('\n[RunHop] Program input is busy. Try sending it again.\n');
+          } else if (child.stdin.writable) {
+            child.stdin.write(line + '\n');
+          }
+        };
+      }
+      this.terminal.update(this.stopping ? 'Stopping' : 'Running', child.pid);
+      this.respond(request);
+    });
+    child.on('error', error => {
+      if (!child.pid) this.respond(request, error.message);
+      this.finish({ phase: 'Failed', detail: error.message });
+    });
+    child.once('close', (code, signal) => {
+      this.finish(
+        code === null
+          ? {
+              phase: this.stopping ? 'Exited' : 'Failed',
+              detail: 'Python ended with ' + signal + '.',
+            }
+          : exitOutcome(code, this.stopping)
+      );
+    });
+  }
+
   private finish(outcome: Outcome): void {
     if (this.done) {
       return;
@@ -164,6 +217,7 @@ export class DirectRun implements SessionAdapter {
     this.detach?.();
     this.detach = undefined;
     this.channel = undefined;
+    this.stopLocal = undefined;
     clearTimeout(this.closeTimer);
     if (outcome.code !== undefined) {
       this.terminal.write('\n[RunHop] Process exited with code ' + outcome.code + '.\n');
@@ -201,6 +255,10 @@ export class DirectRun implements SessionAdapter {
     this.terminal.update('Stopping');
     if (!this.started) {
       this.finish({ phase: 'Exited', detail: 'Run was cancelled before Python started.' });
+      return;
+    }
+    if (this.stopLocal) {
+      this.stopLocal();
       return;
     }
     this.channel?.end();

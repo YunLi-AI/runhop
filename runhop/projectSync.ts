@@ -3,7 +3,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { FileType } from './transport/core';
 import { isLocalPathAtOrUnder } from './paths';
-import { IncrementalSync, sourceFingerprint } from './incrementalSync';
 import { artifactPath } from './paths';
 import { transferWithRsync } from './rsync';
 import {
@@ -148,8 +147,7 @@ export function registerProjectSync(
   log: vscode.OutputChannel,
   queueTransfer: (key: string, transfer: () => Promise<void>) => Promise<void>,
   excludeOutputs: (key: string, outputs: string[]) => string[],
-  clearFailures: (workspace: string, key: string) => void,
-  incremental: IncrementalSync
+  clearFailures: (workspace: string, key: string) => void
 ): void {
   for (const action of ['upload', 'download', 'syncMode', 'settings'] as const) {
     context.subscriptions.push(
@@ -249,16 +247,7 @@ export function registerProjectSync(
                     await syncSource(project, outputs, { scope });
                   }
                 };
-                if (!relative) {
-                  await incremental.rememberFullSync(target, outputs, upload);
-                } else {
-                  const fingerprint =
-                    kind === FileType.File ? await sourceFingerprint(scope) : undefined;
-                  await upload();
-                  if (fingerprint !== undefined) {
-                    await incremental.rememberUpload(target, scope, fingerprint);
-                  }
-                }
+                await upload();
                 if (!relative) {
                   clearFailures(workspace, key);
                 }

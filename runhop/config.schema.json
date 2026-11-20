@@ -105,12 +105,17 @@
           "type": "string",
           "description": "Name of a remote interpreter."
         },
+        "localPython": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Local Python executable name or path. Omit to detect the interpreter automatically."
+        },
         "args": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "One item per remote command-line argument."
+          "description": "One item per command-line argument."
         },
         "cwd": {
           "type": "string",
@@ -142,7 +147,7 @@
         "runOn": {
           "type": "string",
           "enum": ["local", "remote"],
-          "description": "Choose local VS Code Python or a RunHop SSH target. Omit to use a named remote interpreter or a mapped target when available."
+          "description": "Choose local Python or a RunHop SSH target. Omit to use a named remote interpreter or a mapped target when available."
         }
       }
     },

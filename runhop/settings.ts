@@ -17,6 +17,7 @@ export interface Interpreter {
 export interface ScriptOptions {
   runOn?: 'local' | 'remote';
   interpreter?: string;
+  localPython?: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
@@ -134,12 +135,20 @@ function validRunLocation(value: unknown): boolean {
   return value === undefined || value === 'local' || value === 'remote';
 }
 
+function validLocalPython(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' && Boolean(value.trim()) && !/[\0\r\n]/.test(value))
+  );
+}
+
 export function optionsFor(settings: Settings, key: string): ScriptOptions {
   const options =
     settings.scripts && Object.hasOwn(settings.scripts, key) ? settings.scripts[key] : {};
   if (
     !isRecord(options) ||
     !validRunLocation(options.runOn) ||
+    !validLocalPython(options.localPython) ||
     (options.interpreter !== undefined && typeof options.interpreter !== 'string') ||
     options.syncBeforeLaunch !== undefined ||
     (options.syncMode !== undefined && !isSyncMode(options.syncMode))
@@ -167,6 +176,7 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
     !isRecord(config) ||
     !validEntry ||
     !validRunLocation(config.runOn) ||
+    !validLocalPython(config.localPython) ||
     (config.cwd !== undefined && (typeof config.cwd !== 'string' || config.cwd.includes('\0'))) ||
     (config.interpreter !== undefined && typeof config.interpreter !== 'string') ||
     config.syncBeforeLaunch !== undefined ||
@@ -175,7 +185,7 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
     throw new Error(
       'Invalid RunHop run configuration ' +
         name +
-        '. Check its script or module, runOn, interpreter, cwd and syncMode.'
+        '. Check its script or module, runOn, interpreter, localPython, cwd and syncMode.'
     );
   }
   return config;
@@ -183,6 +193,27 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
 
 export function isPythonModule(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)*$/.test(value);
+}
+
+export function validateLaunchArguments(args: unknown, env: unknown): void {
+  if (
+    args !== undefined &&
+    (!Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0')))
+  ) {
+    throw new Error('args must be a list of strings without NUL characters.');
+  }
+  if (
+    env !== undefined &&
+    (!isRecord(env) ||
+      Object.entries(env).some(
+        ([name, value]) =>
+          !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ||
+          typeof value !== 'string' ||
+          value.includes('\0')
+      ))
+  ) {
+    throw new Error('env must map environment variable names to string values.');
+  }
 }
 
 export function scriptLaunchOptions(
@@ -199,6 +230,7 @@ export function scriptLaunchOptions(
         ...saved,
         runOn: saved.runOn ?? source.runOn,
         interpreter: saved.interpreter ?? source.interpreter,
+        localPython: saved.localPython ?? source.localPython,
       }
     : source;
   return { program, options, ...(saved?.module ? { module: saved.module } : {}) };

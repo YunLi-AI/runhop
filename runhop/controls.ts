@@ -215,7 +215,7 @@ export function registerControls(
     }
     const { program } = scriptLaunchOptions(settings, folder.uri.fsPath, uri.fsPath, name);
     if (!fileRunsRemotely(settings, folder.uri.fsPath, program, name)) {
-      if (await startLocalPython(folder, program, noDebug, settings, name)) {
+      if (await startLocalPython(debugType, folder, program, noDebug, settings, name)) {
         await rememberShortcuts(folder);
       }
       return;

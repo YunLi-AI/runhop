@@ -2,13 +2,14 @@ import { mkdir, mkdtemp, realpath, stat } from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isLocalPathAtOrUnder } from './paths';
-import { AdapterLaunch, RemoteAdapter, SessionAdapter } from './adapter';
+import { AdapterLaunch, PythonAdapter, SessionAdapter } from './adapter';
 import { registerControls } from './controls';
 import type { ConfigurationEditorProject } from './configurationsPanel';
-import { prepareDebugger, resolveRemotePath } from './debuggerHelper';
+import { prepareLocalDebugger, resolveRemotePath, startRemoteDebugger } from './debuggerHelper';
 import { DirectRun } from './directRun';
 import { registerFileLaunch } from './fileLaunch';
 import { createIncrementalSync } from './incrementalSync';
+import { localLaunchKey, resolveLocalPython } from './localPython';
 import { artifactPath, mapProjectPath } from './paths';
 import { registerProjectSync } from './projectSync';
 import { registerSaveUploads } from './saveUploads';
@@ -30,12 +31,13 @@ import {
   launchSyncMode,
   readSettings,
   settingsFile,
+  validateLaunchArguments,
 } from './settings';
 import { Execution, Outcome, rerunTokenKey } from './sessionState';
 
 export const debugType = 'runhop-python';
 
-interface LocalLaunch extends ProjectTransfer {
+interface RemoteLaunch extends ProjectTransfer {
   localRoot: string;
   program?: string;
   cwd: string;
@@ -46,7 +48,7 @@ interface LocalLaunch extends ProjectTransfer {
   launch: vscode.DebugConfiguration;
 }
 
-async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch> {
+async function resolveLaunch(session: vscode.DebugSession): Promise<RemoteLaunch> {
   const requested = session.configuration;
   const folder = session.workspaceFolder;
   if (!vscode.workspace.isTrusted || folder?.uri.scheme !== 'file' || vscode.env.remoteName) {
@@ -119,27 +121,7 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch>
   ) {
     throw new Error('download must be a list of remote paths within the project.');
   }
-  if (
-    launch.args !== undefined &&
-    (!Array.isArray(launch.args) ||
-      launch.args.some(arg => typeof arg !== 'string' || arg.includes('\0')))
-  ) {
-    throw new Error('args must be a list of strings without NUL characters.');
-  }
-  if (
-    launch.env !== undefined &&
-    (!launch.env ||
-      typeof launch.env !== 'object' ||
-      Array.isArray(launch.env) ||
-      Object.entries(launch.env).some(
-        ([name, value]) =>
-          !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ||
-          typeof value !== 'string' ||
-          value.includes('\0')
-      ))
-  ) {
-    throw new Error('env must map environment variable names to string values.');
-  }
+  validateLaunchArguments(launch.args, launch.env);
   if (
     launch.module !== undefined &&
     (typeof launch.module !== 'string' || launch.module.includes('\0'))
@@ -167,10 +149,8 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch>
     if (program && sourceIgnored({ service, config }, program, outputs)) {
       throw new Error('The Python program must be included in the source sync.');
     }
-    if (syncMode === 'full') {
-      requireSavedProjectFiles(target, outputs);
-    }
   }
+  requireSavedProjectFiles(target, outputs);
   return {
     ...projectTransfer(target),
     program,
@@ -187,7 +167,7 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<LocalLaunch>
 interface ActiveRun {
   cancellation: vscode.CancellationTokenSource;
   adapter?: SessionAdapter;
-  project?: LocalLaunch;
+  project?: RemoteLaunch;
   key?: string;
 }
 
@@ -243,7 +223,7 @@ export function registerLaunch(
   }
 
   async function collectResults(
-    project: LocalLaunch,
+    project: RemoteLaunch,
     key: string,
     outcome: Outcome,
     terminal: SessionTerminal
@@ -275,15 +255,8 @@ export function registerLaunch(
   }
 
   const incremental = createIncrementalSync(context.storageUri ?? context.globalStorageUri);
-  const uploads = registerSaveUploads(context, log, queueTransfer, excludeOutputs, incremental);
-  registerProjectSync(
-    context,
-    log,
-    queueTransfer,
-    excludeOutputs,
-    uploads.clearFailures,
-    incremental
-  );
+  const uploads = registerSaveUploads(context, log, queueTransfer, excludeOutputs);
+  registerProjectSync(context, log, queueTransfer, excludeOutputs, uploads.clearFailures);
   registerControls(context, log, debugType, panel, activeConfigurationProject);
   registerFileLaunch(context, debugType);
   context.subscriptions.push(
@@ -339,7 +312,45 @@ export function registerLaunch(
             throw new vscode.CancellationError();
           }
         };
+        const bindAdapter = (adapter: SessionAdapter) => {
+          if (run.cancellation.token.isCancellationRequested) {
+            adapter.dispose();
+            throw new vscode.CancellationError();
+          }
+          run.adapter = adapter;
+          void adapter.completion.then(outcome => {
+            active.delete(session.id);
+            run.cancellation.dispose();
+            adapter.dispose();
+            if (run.project && run.key) {
+              return collectResults(run.project, run.key, outcome, terminal);
+            }
+          });
+          return new vscode.DebugAdapterInlineImplementation(adapter);
+        };
         try {
+          const bundle = context.asAbsolutePath('resources/debugpy.whl');
+          if (session.configuration[localLaunchKey] === true) {
+            terminal.showActivity('Selecting local Python…');
+            const plan = await resolveLocalPython(session, !direct);
+            checkCancelled();
+            Object.assign(execution, {
+              python: plan.python,
+              cwd: plan.cwd,
+              program: plan.program ?? plan.module,
+            });
+            log.appendLine('Starting ' + name);
+            if (direct) return bindAdapter(new DirectRun(undefined, plan, terminal, log));
+            const helper = await prepareLocalDebugger(
+              context.globalStorageUri.fsPath,
+              plan.python,
+              plan.cwd,
+              bundle,
+              () => terminal.showActivity('Preparing the local debugger…')
+            );
+            checkCancelled();
+            return bindAdapter(PythonAdapter.startLocal(plan, helper, terminal, log));
+          }
           const project = (run.project = await resolveLaunch(session));
           const { service, config, localRoot, remotePython, outputs, launch } = project;
           const key = (run.key = projectTransferKey(project));
@@ -367,12 +378,25 @@ export function registerLaunch(
             if (project.syncMode === 'incremental') {
               await queueTransfer(key, async () => {
                 checkCancelled();
-                await incremental.sync(
+                const { uploaded, restored } = await incremental.sync(
                   project,
                   excludeOutputs(key, outputs),
+                  remotePython,
                   run.cancellation.token,
                   message => terminal.showActivity(message)
                 );
+                if (restored) {
+                  terminal.write(
+                    '[RunHop] Restored ' +
+                      restored +
+                      ' missing remote file(s) from saved local source.\n'
+                  );
+                }
+                if (uploaded) {
+                  log.appendLine(
+                    'RunHop: Uploaded ' + uploaded + ' changed project file(s) to ' + config.host
+                  );
+                }
               });
             }
           }
@@ -380,6 +404,7 @@ export function registerLaunch(
           terminal.showActivity('Connecting to remote Python on ' + config.host + '…');
           const { fs, client } = await connectSsh(service, config);
           const remoteRoot = await resolveRemotePath(client, config.remotePath);
+          requireSavedProjectFiles(project, excludeOutputs(key, outputs));
           const args: AdapterLaunch = {
             python: remotePython,
             cwd: mapProjectPath(project.cwd, localRoot, remoteRoot),
@@ -388,8 +413,7 @@ export function registerLaunch(
               : { module: launch.module }),
             args: launch.args || [],
             env: launch.env || {},
-            localRoot,
-            remoteRoot,
+            pathMapping: { localRoot, remoteRoot },
             justMyCode: launch.justMyCode !== false,
             stopOnEntry: launch.stopOnEntry === true,
           };
@@ -401,32 +425,22 @@ export function registerLaunch(
           if (direct) {
             adapter = new DirectRun(raw, args, terminal, log);
           } else {
-            const helper = await prepareDebugger(
+            const channel = await startRemoteDebugger(
               fs,
               client,
               remotePython,
-              context.asAbsolutePath('resources/debugpy.whl'),
-              () => terminal.showActivity('Preparing the debugger on ' + config.host + '…')
+              bundle,
+              () => terminal.showActivity('Preparing the debugger on ' + config.host + '…'),
+              checkCancelled
             );
-            checkCancelled();
-            adapter = await RemoteAdapter.start(raw, args, helper, terminal, log);
+            adapter = PythonAdapter.startRemote(channel, args, terminal, log);
           }
-          if (run.cancellation.token.isCancellationRequested) {
-            adapter.dispose();
-            throw new vscode.CancellationError();
-          }
-          run.adapter = adapter;
-          void adapter.completion.then(outcome => {
-            active.delete(session.id);
-            run.cancellation.dispose();
-            adapter.dispose();
-            return collectResults(project, key, outcome, terminal);
-          });
-          return new vscode.DebugAdapterInlineImplementation(adapter);
+          return bindAdapter(adapter);
         } catch (error) {
           const cancelled = error instanceof vscode.CancellationError;
           const detail = cancelled ? 'Launch cancelled.' : error.message;
           terminal.write('[RunHop] ' + detail + '\n');
+          if (!cancelled) log.appendLine('RunHop: ' + detail);
           terminal.finish({ phase: cancelled ? 'Exited' : 'Failed', detail });
           active.delete(session.id);
           run.cancellation.dispose();

@@ -22,6 +22,7 @@ export interface ExecOptions {
   // `ForceCommand internal-sftp` exit at once instead of waiting on stdin
   // until the timeout.
   closeStdin?: boolean;
+  input?: string;
   onStdout?(chunk: Buffer): void;
   onStderr?(chunk: Buffer): void;
 }
@@ -121,7 +122,9 @@ export function execCommand(
         }
       });
 
-      if (options.closeStdin) {
+      if (options.input !== undefined) {
+        stream.end(options.input);
+      } else if (options.closeStdin) {
         stream.end();
       }
     });

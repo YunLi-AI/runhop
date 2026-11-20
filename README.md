@@ -26,6 +26,7 @@ We want to use remote compute while keeping the workspace local.
 
 - **SSH Interpreter** — Use remote Python, Conda, and venv environments directly.
 - **Remote Run & Debug** — Sync local code automatically, run it remotely, and debug with breakpoints.
+- **Local Run & Debug** — Run with your local Python and debug with the debugpy bundled in RunHop. Local debugging requires Python 3.8 or later. Set the executable under **RunHop Configurations → Local Interpreter** or leave it blank for automatic detection.
 - **PyCharm-like Debugger** — Step through code, inspect variables and the call stack, use watches and the Debug Console, and manage breakpoints.
 - **Multiple Sessions** — Manage concurrent Run and Debug sessions and view each one's output and status independently.
 - **Remote Terminal** — Open an interactive remote shell that initializes and activates the selected environment.

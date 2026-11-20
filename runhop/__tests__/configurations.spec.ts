@@ -47,13 +47,20 @@ test('creates and selects a named preset that the launch resolver reads', async 
   const { settings, key } = await save('{}', {
     section: 'run',
     key: 'new',
-    fields: preset({ runOn: 'local', cwd: 'src' }),
+    fields: preset({ runOn: 'local', cwd: 'src', localPython: 'venv with spaces/bin/python' }),
   });
   expect(key).toBe('run:Train');
   expect(settings.activeRunConfiguration).toBe('Train');
   const selection = configuredScript(settings, workspace, undefined, 'Train');
   expect(selection.program).toBe(path.join(workspace, 'src', 'train.py'));
-  expect(selection.options).toMatchObject({ args: ['--label', 'one two'], cwd: 'src' });
+  expect(selection.options).toMatchObject({
+    args: ['--label', 'one two'],
+    cwd: 'src',
+    localPython: 'venv with spaces/bin/python',
+  });
+  expect(configurationRows(settings, 'src/train.py').run[1].values.localPython).toBe(
+    selection.options.localPython
+  );
   expect(fileRunsRemotely(settings, workspace, selection.program, 'Train')).toBe(false);
 });
 

@@ -2,7 +2,7 @@
   "name": "runhop",
   "displayName": "RunHop",
   "description": "Synchronize a local workspace and run or debug Python on an SSH server.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "yunli-ai",
   "author": "YunLi AI",
   "homepage": "https://github.com/YunLi-AI/runhop",

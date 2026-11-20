@@ -9,6 +9,8 @@ const container = document.getElementById('terminal');
 const empty = document.getElementById('empty');
 const sessionBar = document.getElementById('execution-bar');
 const tabs = document.getElementById('execution-tabs');
+const programInput = document.getElementById('program-input');
+const programLine = document.getElementById('program-line');
 const fit = new FitAddon();
 let active;
 let terminal;
@@ -18,6 +20,22 @@ let sessionKey;
 function command(type, id, executionId) {
   vscode.postMessage({ type, id, executionId });
 }
+
+programInput.addEventListener('submit', event => {
+  event.preventDefault();
+  if (active?.canInput) {
+    vscode.postMessage({
+      type: 'programInput',
+      id: active.id,
+      executionId: active.executionId,
+      data: programLine.value,
+    });
+    programLine.value = '';
+  }
+});
+document.getElementById('program-eof').addEventListener('click', () => {
+  if (active?.canInput) command('programEof', active.id, active.executionId);
+});
 
 document.getElementById('execution-new').addEventListener('click', () => command('newSession'));
 
@@ -162,6 +180,7 @@ const workbench = mountWorkbench(
   allowed => {
     outputAllowed = allowed;
     container.hidden = !active || !allowed;
+    programInput.hidden = !active?.canInput || !allowed;
     if (allowed) {
       resize();
     }
@@ -196,9 +215,11 @@ window.addEventListener('message', ({ data: message }) => {
   if (message.type !== 'state') {
     return;
   }
+  if (active?.executionId !== message.active?.executionId) programLine.value = '';
   active = message.active;
   empty.hidden = Boolean(active);
   container.hidden = !active || !outputAllowed;
+  programInput.hidden = !active?.canInput || !outputAllowed;
   if (!active) {
     return;
   }

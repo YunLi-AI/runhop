@@ -55,6 +55,7 @@ function scriptValues(script: unknown, active: boolean) {
     module: text(raw.module),
     runOn: text(raw.runOn),
     interpreter: text(raw.interpreter),
+    localPython: text(raw.localPython),
     cwd: text(raw.cwd),
     args: formatArguments(
       Array.isArray(raw.args) ? raw.args.filter(v => typeof v === 'string') : []
@@ -458,6 +459,7 @@ export async function configurationEdits(
     const values = {
       runOn: runOn || undefined,
       interpreter,
+      localPython: pathField(fields, 'localPython'),
       cwd: cwd ? scriptKey(workspace, cwd) || '.' : undefined,
       args: parseArguments(field(fields, 'args')),
       env: environment(fields, 'env' in original ? original.env : undefined),

@@ -26,6 +26,7 @@ RunHop 是一个 VS Code 扩展，让你在本地编写 Python 代码，直接�
 
 - **SSH Interpreter** — 直接使用远程 Python、Conda 和 venv 环境。
 - **Remote Run & Debug** — 本地代码自动同步，远程执行和断点调试。
+- **Local Run & Debug** — 直接用本地 Python 运行，并使用 RunHop 随包提供的 debugpy 调试。本地调试需要 Python 3.8 或更高版本。可在 **RunHop 配置中心 → 本地解释器** 指定可执行文件，或留空自动检测。
 - **PyCharm-like Debugger** — 单步执行、变量、调用栈、Watches、Debug Console 和断点管理。
 - **Multiple Sessions** — 同时管理多个 Run / Debug 任务，独立查看输出和状态。
 - **Remote Terminal** — 远程交互式 Shell，自动初始化并激活对应环境。

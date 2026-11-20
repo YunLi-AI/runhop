@@ -18,6 +18,7 @@ export interface Execution {
   cwd?: string;
   configurationFile?: string;
   stop?: () => Promise<void>;
+  input?: (line: string | null) => void;
   rerun?: (token: string) => Promise<void>;
 }
 

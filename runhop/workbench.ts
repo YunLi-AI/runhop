@@ -37,6 +37,7 @@ type Node = Variable & {
   error?: string;
   loading?: boolean;
   limited?: boolean;
+  more?: boolean;
   metadata?: string;
 };
 type Watch = { id: number; expression: string; auto: boolean };
@@ -63,6 +64,7 @@ interface SessionState {
   thread?: number;
   frame?: Frame;
   nodes: Map<number, Node>;
+  variablePages: Map<number, Variable[]>;
   scopes: Node[];
   scopesLoading: boolean;
   console: ConsoleLine[];
@@ -280,6 +282,7 @@ class DebugWorkbench {
       stopped: new Set(),
       allStopped: false,
       nodes: new Map(),
+      variablePages: new Map(),
       scopes: [],
       scopesLoading: false,
       console: [],
@@ -525,6 +528,7 @@ class DebugWorkbench {
     s.scopes = [];
     s.scopesLoading = false;
     s.nodes.clear();
+    s.variablePages.clear();
     s.watchValues.clear();
     if (this.selected === s.session.id) {
       this.clearHighlight();
@@ -781,24 +785,17 @@ class DebugWorkbench {
     try {
       const { variables } = await s.session.customRequest('variables', {
         variablesReference: node.variablesReference,
-        start: 0,
-        count: variableLimit,
       });
       if (epoch === s.frameEpoch) {
-        const limit = Math.min(variableLimit, nodeLimit - s.nodes.size);
-        const children: Node[] = (variables ?? [])
-          .slice(0, limit)
-          .map(variable => this.node(s, variable));
-        node.children = children;
-        if (/(?:ndarray|Tensor|Parameter)/i.test(node.type ?? '')) {
-          node.metadata = children
-            .filter(child => /^(?:shape|dtype|device)$/.test(child.name) && child.value)
-            .map(child => child.name + ' ' + child.value)
-            .join(' · ');
-        }
+        const pending = [...s.variablePages.values()].reduce((sum, items) => sum + items.length, 0);
+        const limit = Math.max(0, nodeLimit - s.nodes.size - pending);
+        const page = (variables ?? []).slice(0, limit);
+        node.children = [];
+        if (page.length) s.variablePages.set(node.id, page);
         node.limited =
-          (variables?.length ?? 0) >= limit ||
+          (variables?.length ?? 0) > limit ||
           (node.indexedVariables ?? 0) + (node.namedVariables ?? 0) > limit;
+        this.moreVariables(s, node);
       }
     } catch (error) {
       if (epoch === s.frameEpoch) {
@@ -810,6 +807,26 @@ class DebugWorkbench {
         this.publish();
       }
     }
+  }
+
+  private moreVariables(s: SessionState, node: Node): void {
+    const items = s.variablePages.get(node.id);
+    if (!paused(s) || !items) return;
+    const children = node.children ?? (node.children = []);
+    const size = Math.min(variableLimit, nodeLimit - s.nodes.size);
+    children.push(...items.splice(0, size).map(variable => this.node(s, variable)));
+    node.more = items.length > 0 && s.nodes.size < nodeLimit;
+    if (!node.more) {
+      node.limited ||= items.length > 0;
+      s.variablePages.delete(node.id);
+    }
+    if (/(?:ndarray|Tensor|Parameter)/i.test(node.type ?? '')) {
+      node.metadata = children
+        .filter(child => /^(?:shape|dtype|device)$/.test(child.name) && child.value)
+        .map(child => child.name + ' ' + child.value)
+        .join(' · ');
+    }
+    this.publish();
   }
 
   private async execution(s: SessionState, action: string, targetId?: number): Promise<void> {
@@ -939,6 +956,7 @@ class DebugWorkbench {
       s.frameEpoch++;
       s.scopes = [];
       s.nodes.clear();
+      s.variablePages.clear();
       s.watchValues.clear();
       await this.scopes(s, frame, s.frameEpoch);
     }
@@ -1061,6 +1079,9 @@ class DebugWorkbench {
           if (node) {
             await this.expand(s, node);
           }
+          break;
+        case 'variablesMore':
+          if (node?.open) this.moreVariables(s, node);
           break;
         case 'preview':
           if (node?.evaluateName && s.frame && paused(s) && s.session.type === debugType) {

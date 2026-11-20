@@ -649,7 +649,7 @@ function runEditor(form) {
     options: localizedOptions([
       ['', 'Automatic'],
       ['remote', 'SSH server'],
-      ['local', 'Local VS Code Python'],
+      ['local', 'Local Python'],
     ]),
     rerender: true,
   });
@@ -658,6 +658,13 @@ function runEditor(form) {
     const interpreters = savedRows('interpreters').map(item => [item.label, item.label]);
     row(launch, 'interpreter', 'Remote Interpreter', 'select', {
       options: [['', t('Use project / script default')], ...interpreters],
+    });
+  }
+  if (value('runOn') !== 'remote') {
+    row(launch, 'localPython', 'Local Interpreter', 'input', {
+      browse: true,
+      placeholder: 'python3',
+      hint: 'Leave blank to detect your local Python.',
     });
   }
   check(

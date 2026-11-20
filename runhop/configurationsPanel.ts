@@ -327,9 +327,15 @@ export function registerConfigurations(
         const workspaceFile = field === 'program';
         if (
           typeof field !== 'string' ||
-          !['cwd', 'context', 'program', 'privateKeyPath', 'sshConfigPath', 'ignoreFile'].includes(
-            field
-          )
+          ![
+            'cwd',
+            'context',
+            'program',
+            'localPython',
+            'privateKeyPath',
+            'sshConfigPath',
+            'ignoreFile',
+          ].includes(field)
         ) {
           return;
         }
@@ -349,7 +355,10 @@ export function registerConfigurations(
           send({
             type: 'browse',
             field,
-            value: inside ? scriptKey(workspace, picked.fsPath) || '.' : picked.fsPath,
+            value:
+              field === 'localPython' || !inside
+                ? picked.fsPath
+                : scriptKey(workspace, picked.fsPath) || '.',
           });
         }
         return;

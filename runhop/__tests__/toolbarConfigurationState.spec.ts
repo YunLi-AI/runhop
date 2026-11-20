@@ -9,7 +9,6 @@ jest.mock('vscode', () => ({
   Uri: class Uri {},
   l10n: { t: (message: string) => message },
   env: { language: 'en' },
-  extensions: { getExtension: jest.fn(() => ({})) },
   debug: { startDebugging: jest.fn(async () => true) },
   commands: {
     executeCommand: jest.fn(async () => undefined),
@@ -164,7 +163,7 @@ test('opens the editor only after the user selects Open Configurations', async (
 });
 
 test.each(launchCommands)(
-  '%s uses the program options saved in runhop.json',
+  '%s starts a local RunHop session for the configured program without a Python extension',
   async (id, noDebug) => {
     const read = jest.spyOn(settings, 'readOptionalSettings').mockResolvedValue({
       targets: [],
@@ -176,10 +175,10 @@ test.each(launchCommands)(
       expect(vscode.debug.startDebugging).toHaveBeenCalledWith(
         folder,
         expect.objectContaining({
-          type: 'debugpy',
+          type: 'runhop-python',
+          runhopLocal: true,
           program: file.fsPath,
-          args: ['--from-json'],
-          runhopUsesProjectSettings: true,
+          noDebug,
         }),
         expect.objectContaining({ noDebug })
       );

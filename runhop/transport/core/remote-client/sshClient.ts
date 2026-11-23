@@ -295,7 +295,7 @@ export default class SSHClient extends RemoteClient {
 
                   answers.push(answer);
                   redo(name, instructions, instructionsLang, prompts, finish, answers);
-                });
+                }, reject);
             } else {
               finish(answers);
             }
@@ -303,13 +303,19 @@ export default class SSHClient extends RemoteClient {
         );
       }
 
+      const disconnected = () => {
+        reject(
+          hostKeyError || new Error('The SSH connection closed before authentication completed.')
+        );
+        this.end();
+      };
       client
         .on('ready', resolve)
         .on('error', err => {
           reject(hostKeyError || describeConnectError(err, option.host));
         })
-        .on('close', () => this.end())
-        .on('end', () => this.end())
+        .on('close', disconnected)
+        .on('end', disconnected)
         .connect({
           keepaliveInterval: resolveKeepaliveInterval(keepaliveInterval),
           keepaliveCountMax: resolveKeepaliveCountMax(keepaliveCountMax),

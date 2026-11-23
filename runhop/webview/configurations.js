@@ -826,7 +826,7 @@ function syncEditor(form) {
   if (draft.key === 'project') {
     const policy = formGroup(form, 'Upload Policy');
     row(policy, 'syncMode', 'Sync Before Launch', 'select', { options: localizedOptions(modes) });
-    check(policy, 'uploadOnSave', 'Upload eligible files when saved');
+    check(policy, 'uploadOnSave', 'Automatically upload eligible local file changes');
     policy.append(
       node(
         'p',
@@ -850,7 +850,7 @@ function syncEditor(form) {
     node(
       'p',
       t(
-        'Upload on Save and launch synchronization use this mapping. Review the remote root before the next upload.'
+        'Automatic uploads and launch synchronization use this mapping. Review the remote root before the next upload.'
       ),
       'hint'
     )

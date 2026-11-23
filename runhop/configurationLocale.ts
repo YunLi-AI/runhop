@@ -174,7 +174,7 @@ const chinese: Record<string, string> = {
   'Optional path for Remote Terminal activation.': '可选。远程终端激活环境时使用此路径。',
   'Use as the default remote interpreter': '设为默认远程解释器',
   'Upload Policy': '上传策略',
-  'Upload eligible files when saved': '保存时上传符合规则的文件',
+  'Automatically upload eligible local file changes': '自动上传符合规则的本地文件改动',
   'Changed Files deploys once, then uploads local changes. Project Scan compares files at every launch. Off skips launch sync.':
     '「仅同步变更」首次部署后只上传本地改动。「扫描项目」每次启动时比较文件。「关闭」会跳过启动前同步。',
   'Path Mapping': '路径映射',
@@ -183,7 +183,7 @@ const chinese: Record<string, string> = {
   'One gitignore-style pattern per line, relative to the local project root.':
     '每行填写一条 gitignore 风格的规则，路径相对于本地项目根目录。',
   'Ignore File': '忽略规则文件',
-  'Upload on Save and launch synchronization use this mapping. Review the remote root before the next upload.':
+  'Automatic uploads and launch synchronization use this mapping. Review the remote root before the next upload.':
     '保存时上传与启动前同步均使用此映射。下次上传前请确认远程项目根目录。',
   'Testing SSH connection…': '正在测试 SSH 连接…',
   'Checking Python on the server…': '正在检查服务器上的 Python…',

@@ -32,6 +32,16 @@ await cp(
 );
 await mkdir(path.join(stage, 'resources'));
 await cp(
+  path.join(root, 'runhop', 'remoteSources', 'source.py'),
+  path.join(stage, 'resources', 'remoteSource.py')
+);
+for (const component of ['common', 'highlight', 'lr', 'python']) {
+  await cp(
+    path.join(root, 'node_modules', '@lezer', component, 'LICENSE'),
+    path.join(stage, 'resources', 'lezer-' + component + '-LICENSE.txt')
+  );
+}
+await cp(
   path.join(root, 'runhop', 'transport', 'LICENSE'),
   path.join(stage, 'resources', 'sftpresso-LICENSE.txt')
 );

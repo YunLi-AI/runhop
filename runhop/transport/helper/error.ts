@@ -46,7 +46,7 @@ export function describeConnectError(err: any, host: string): Error {
       }
   }
 
-  const wrapped = new Error(friendly);
+  const wrapped = Object.assign(new Error(friendly), { code: err?.code, level: err?.level });
   wrapped.stack = err && err.stack ? err.stack : wrapped.stack;
   return wrapped;
 }

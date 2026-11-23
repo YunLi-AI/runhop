@@ -81,19 +81,20 @@ async function setSyncMode(folder: vscode.WorkspaceFolder, settings: Settings): 
         : launchMode === 'incremental'
           ? 'Sync changed files'
           : onSave
-            ? 'Upload on save'
+            ? 'Automatic upload'
             : 'Manual only';
   const mode = await vscode.window.showQuickPick(
     [
       {
         label: 'Sync Changed Files',
-        detail: 'Deploy once, then upload saves and send local changes before Run or Debug.',
+        detail: 'Upload local edits automatically and verify changes before Run or Debug.',
         syncMode: 'incremental',
         onSave: true,
       },
       {
-        label: 'Upload on Save',
-        detail: 'Upload only the saved file. Skip project scans at launch.',
+        label: 'Automatic Upload',
+        detail:
+          'Upload changed local files as they are written to disk. Skip project scans at launch.',
         syncMode: 'off',
         onSave: true,
       },
@@ -127,7 +128,7 @@ async function setSyncMode(folder: vscode.WorkspaceFolder, settings: Settings): 
   }
 }
 
-function configuredOutputs(settings: Settings, target: RunHopTarget): string[] {
+export function configuredOutputs(settings: Settings, target: RunHopTarget): string[] {
   const { workspace, baseDir } = target.service;
   const entries = [
     ...Object.entries(settings.scripts ?? {}),
@@ -147,7 +148,7 @@ export function registerProjectSync(
   log: vscode.OutputChannel,
   queueTransfer: (key: string, transfer: () => Promise<void>) => Promise<void>,
   excludeOutputs: (key: string, outputs: string[]) => string[],
-  clearFailures: (workspace: string, key: string) => void
+  clearFailures: (workspace: string, key: string, scope?: string) => void
 ): void {
   for (const action of ['upload', 'download', 'syncMode', 'settings'] as const) {
     context.subscriptions.push(
@@ -248,9 +249,7 @@ export function registerProjectSync(
                   }
                 };
                 await upload();
-                if (!relative) {
-                  clearFailures(workspace, key);
-                }
+                clearFailures(workspace, key, relative ? scope : undefined);
                 void vscode.window.showInformationMessage(
                   'RunHop: Upload finished on ' + target.config.host + '.'
                 );

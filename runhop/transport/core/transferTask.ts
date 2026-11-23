@@ -44,6 +44,8 @@ export interface TransferOption {
   // uploads only: awaited once before the first attempt touches the target (see
   // src/core/backup.ts); a rejection fails the task and the target is never written
   beforeOverwrite?: (targetFsPath: string, targetFs: FileSystem) => Promise<void>;
+  // Optional guarded installation of an already transferred temporary file.
+  publishStaged?: (staging: string, destination: string) => Promise<void>;
 }
 
 // files smaller than this transfer as a single stream even in 'auto' mode --
@@ -434,7 +436,9 @@ export default class TransferTask implements Task {
         throw new CancellationError();
       }
       if (useTempFile) {
-        if (openSsh) {
+        if (this._TransferOption.publishStaged) {
+          await this._TransferOption.publishStaged(staging, destination);
+        } else if (openSsh) {
           await target.renameAtomic(staging, destination);
         } else {
           await target.unlink(destination).catch(error => {

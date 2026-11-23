@@ -291,11 +291,15 @@ export function registerControls(
   async function editUploadOnSave(folder: vscode.WorkspaceFolder): Promise<void> {
     const choice = await vscode.window.showQuickPick(
       [
-        { label: 'On', description: 'Upload eligible files when saved', value: true },
+        {
+          label: 'On',
+          description: 'Upload eligible saved and externally changed files',
+          value: true,
+        },
         { label: 'Off', value: false },
         { label: '$(list-tree) RunHop Configurations…', value: undefined },
       ],
-      { title: 'RunHop · Upload on Save · Project Setting' }
+      { title: 'RunHop · Automatic Upload · Project Setting' }
     );
     if (choice?.value === undefined && choice) {
       await vscode.commands.executeCommand('runhop.configurations', folder, { section: 'sync' });
@@ -390,7 +394,7 @@ export function registerControls(
         run: () => editLaunchSync(script, settings),
       },
       {
-        label: '$(cloud-upload) Upload on Save…',
+        label: '$(cloud-upload) Automatic Upload…',
         description: settings.uploadOnSave !== false ? 'On' : 'Off',
         run: () => editUploadOnSave(script.folder),
       }

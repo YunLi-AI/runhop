@@ -2,7 +2,7 @@
   "name": "runhop",
   "displayName": "RunHop",
   "description": "Synchronize a local workspace and run or debug Python on an SSH server.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "yunli-ai",
   "author": "YunLi AI",
   "homepage": "https://github.com/YunLi-AI/runhop",
@@ -25,6 +25,7 @@
   ],
   "activationEvents": [
     "onLanguage:python",
+    "onFileSystem:runhop-source",
     "onDebugResolve:runhop-python",
     "workspaceContains:.vscode/runhop.json"
   ],
@@ -34,6 +35,7 @@
     }
   },
   "dependencies": {
+    "@lezer/python": "^1.1.19",
     "fs-extra": "^11.4.1",
     "ignore": "^7.0.14",
     "joi": "^18.3.2",
@@ -169,6 +171,11 @@
         "command": "runhop.file.debug",
         "title": "RunHop: Debug",
         "icon": "$(debug-alt)"
+      },
+      {
+        "command": "runhop.remoteDefinition",
+        "title": "Go to Remote Definition",
+        "category": "RunHop"
       }
     ],
     "menus": {
@@ -253,6 +260,11 @@
       ],
       "editor/context": [
         {
+          "command": "runhop.remoteDefinition",
+          "when": "editorLangId == python && (resourceScheme == file || resourceScheme == runhop-source) && isWorkspaceTrusted",
+          "group": "navigation@4"
+        },
+        {
           "command": "runhop.file.run",
           "when": "resourceScheme == file && resourceFilename =~ /\\.pyw?$/i && isWorkspaceTrusted",
           "group": "runhop@1"
@@ -287,6 +299,25 @@
           "icon": "resources/server.svg"
         }
       ]
+    },
+    "configuration": {
+      "title": "RunHop",
+      "properties": {
+        "runhop.remoteSource.preconnect": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Connect over SSH when a default remote interpreter is selected. Dependency source is read over the network when opened."
+        },
+        "runhop.remoteSource.idleMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440,
+          "default": 5,
+          "scope": "resource",
+          "description": "Close a source-only SSH connection after this many idle minutes. Opening or saving remote source restarts the idle timer."
+        }
+      }
     },
     "jsonValidation": [
       {
@@ -402,6 +433,11 @@
       }
     ],
     "keybindings": [
+      {
+        "command": "runhop.goToDefinition",
+        "key": "f12",
+        "when": "editorTextFocus && editorLangId == python && isWorkspaceTrusted && runhop.remoteSourceNavigation"
+      },
       {
         "command": "runhop.debug",
         "key": "f5",

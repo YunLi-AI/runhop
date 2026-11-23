@@ -255,7 +255,7 @@ export function registerLaunch(
   }
 
   const incremental = createIncrementalSync(context.storageUri ?? context.globalStorageUri);
-  const uploads = registerSaveUploads(context, log, queueTransfer, excludeOutputs);
+  const uploads = registerSaveUploads(context, log, queueTransfer, excludeOutputs, incremental);
   registerProjectSync(context, log, queueTransfer, excludeOutputs, uploads.clearFailures);
   registerControls(context, log, debugType, panel, activeConfigurationProject);
   registerFileLaunch(context, debugType);

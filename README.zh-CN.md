@@ -95,6 +95,8 @@ RunHop 是一个 VS Code 扩展，让你在本地编写 Python 代码，直接�
 
 ![RunHop 远程运行与调试界面](assets/runhop.png)
 
+![RunHop 断点调试界面](assets/runhop_breakpoint.png)
+
 ## How It Works
 
 ```text

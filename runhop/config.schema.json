@@ -45,7 +45,7 @@
         "uploadOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "Upload eligible edited files when saved to the selected RunHop target."
+          "description": "Automatically upload eligible files after editor saves or changes written directly to the local workspace."
         },
         "scripts": {
           "type": "object",

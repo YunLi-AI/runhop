@@ -7,6 +7,7 @@ import { registerPreview } from './preview';
 import { configure } from './targets';
 import { initializeTransport } from './transport/logger';
 import { openServerTerminal } from './remoteTerminal';
+import { registerRemoteSources } from './remoteSources';
 import { TerminalPanel, terminalViewId } from './terminal';
 import { registerWorkbench } from './workbench';
 
@@ -37,6 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const activeConfigurationProject = registerConfigurations(context);
   registerLaunch(context, log, panel, activeConfigurationProject);
+  registerRemoteSources(context, log);
   registerPreview(context);
   registerWorkbench(context, panel);
 }

@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { resolveRemotePath } from './debuggerHelper';
-import { quoteShell } from './paths';
+import { isLocalPathAtOrUnder, quoteShell } from './paths';
 import { connectSsh, type RunHopTarget } from './targets';
 import { isNotFoundError } from './transport/core';
 import { execCommand } from './transport/core/remote-client/exec';
@@ -54,6 +54,45 @@ const inspectScript = [
   '    result.append(entry)',
   'json.dump(result, sys.stdout)',
 ].join('\n');
+
+const publishScript = [
+  'import hashlib, json, os, stat, sys',
+  'root = sys.argv[1]',
+  'relative, staging, expected, digest = json.load(sys.stdin)',
+  'file = os.path.join(root, relative)',
+  'directory = os.path.dirname(file)',
+  'if os.path.dirname(staging) != directory or os.path.realpath(directory) != directory:',
+  '    raise ValueError("Unsafe remote source path: " + relative)',
+  'def fingerprint(info):',
+  '    return ":".join(map(str, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)))',
+  'with open(staging, "rb") as stream:',
+  '    staged = os.fstat(stream.fileno())',
+  '    if not stat.S_ISREG(staged.st_mode):',
+  '        raise ValueError("Staged source is not a regular file: " + relative)',
+  '    data = hashlib.sha256()',
+  '    for chunk in iter(lambda: stream.read(1048576), b""):',
+  '        data.update(chunk)',
+  'if data.hexdigest() != digest or fingerprint(os.lstat(staging)) != fingerprint(staged):',
+  '    raise ValueError("Source changed while uploading: " + relative)',
+  'try:',
+  '    actual = fingerprint(os.lstat(file))',
+  'except FileNotFoundError:',
+  '    actual = None',
+  'if actual != expected:',
+  '    raise ValueError("Remote source changed during upload: " + relative)',
+  'if actual is None:',
+  '    os.link(staging, file)',
+  '    os.unlink(staging)',
+  'else:',
+  '    os.replace(staging, file)',
+  'json.dump(fingerprint(os.lstat(file)), sys.stdout)',
+].join('\n');
+
+function isDirty(file: string): boolean {
+  return vscode.workspace.textDocuments.some(
+    doc => doc.isDirty && doc.uri.scheme === 'file' && doc.uri.fsPath === file
+  );
+}
 
 function checkCancelled(cancellation: vscode.CancellationToken): void {
   if (cancellation.isCancellationRequested) throw new vscode.CancellationError();
@@ -106,6 +145,36 @@ async function localSnapshot(
     }
   }
   return files;
+}
+
+async function changedSnapshot(
+  project: RunHopTarget,
+  outputs: string[],
+  changed: readonly string[],
+  cancellation: vscode.CancellationToken
+): Promise<Map<string, Source>> {
+  const root = project.service.baseDir;
+  const canonical = await realpath(root);
+  const source = new Map<string, Source>();
+  for (const file of changed) {
+    checkCancelled(cancellation);
+    if (
+      !isLocalPathAtOrUnder(root, file) ||
+      sourceIgnored(project, file, outputs) ||
+      isDirty(file)
+    ) {
+      continue;
+    }
+    const info = await localSource(file);
+    if (!info) continue;
+    const resolved = await realpath(file).catch(error => {
+      if (!isNotFoundError(error)) throw error;
+    });
+    if (resolved && isLocalPathAtOrUnder(canonical, resolved)) {
+      source.set(path.relative(root, file).split(path.sep).join('/'), info);
+    }
+  }
+  return source;
 }
 
 async function localDigest(file: string, expected: Source, cancellation: vscode.CancellationToken) {
@@ -163,9 +232,18 @@ export function createIncrementalSync(storage: vscode.Uri) {
     outputs: string[],
     python: string,
     cancellation: vscode.CancellationToken,
-    onStatus: (message: string) => void
-  ): Promise<{ uploaded: number; restored: number }> {
-    requireSavedProjectFiles(project, outputs);
+    onStatus: (message: string) => void,
+    changedFiles?: readonly string[]
+  ): Promise<{
+    uploaded: number;
+    restored: number;
+    conflicts: string[];
+    errors?: Map<string, string>;
+  }> {
+    const checkSaved = () => {
+      if (!changedFiles) requireSavedProjectFiles(project, outputs);
+    };
+    checkSaved();
     const id = createHash('sha256')
       .update(
         project.service.workspace +
@@ -178,17 +256,19 @@ export function createIncrementalSync(storage: vscode.Uri) {
     const key = path.join(directory, id + '.v2.json');
     const baseline = await readBaseline(key);
     onStatus('Checking saved project files…');
-    const source = await localSnapshot(project, outputs, cancellation);
-    if (!source.size) return { uploaded: 0, restored: 0 };
+    const source = changedFiles
+      ? await changedSnapshot(project, outputs, changedFiles, cancellation)
+      : await localSnapshot(project, outputs, cancellation);
+    if (!source.size) return { uploaded: 0, restored: 0, conflicts: [] };
     const local = (file: string) => path.join(project.service.baseDir, ...file.split('/'));
     const { fs, client } = await connectSsh(project.service, project.config);
     checkCancelled(cancellation);
     await fs.ensureDir(project.config.remotePath);
     const root = await resolveRemotePath(client, project.config.remotePath);
-    const command =
-      'exec ' + [python, '-I', '-S', '-c', inspectScript, root].map(quoteShell).join(' ');
     const inspect = async (files: Inspection[]): Promise<(RemoteSource | null)[]> => {
       checkCancelled(cancellation);
+      const command =
+        'exec ' + [python, '-I', '-S', '-c', inspectScript, root].map(quoteShell).join(' ');
       const result = await execCommand(client.getRawClient(), command, {
         input: JSON.stringify(files),
         timeout: project.config.operationTimeout || 60_000,
@@ -200,7 +280,7 @@ export function createIncrementalSync(storage: vscode.Uri) {
           'Unable to verify the remote project on ' + project.config.host + '. ' + detail
         );
       }
-      const response = JSON.parse(result.stdout);
+      const response = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '');
       if (
         !Array.isArray(response) ||
         response.length !== files.length ||
@@ -224,8 +304,8 @@ export function createIncrementalSync(storage: vscode.Uri) {
       Number(baseline[file]?.remote.split(':')[2] ?? -1),
     ]);
     const remote = await inspect(files);
-    const verified: Baseline = Object.create(null);
-    const updates: { file: string; info: Source; digest: string }[] = [];
+    const verified: Baseline = Object.assign(Object.create(null), changedFiles ? baseline : {});
+    const updates = new Map<string, { info: Source; digest: string; remote: string | null }>();
     const conflicts: string[] = [];
     let restored = 0;
     for (const [index, [file, , previous]] of files.entries()) {
@@ -245,17 +325,18 @@ export function createIncrementalSync(storage: vscode.Uri) {
         };
       } else if (
         previousRemote &&
-        baseline[file] &&
-        previousRemote.fingerprint !== baseline[file].remote &&
-        previousRemote.sha256 !== baseline[file].sha256
+        (baseline[file]
+          ? previousRemote.fingerprint !== baseline[file].remote &&
+            previousRemote.sha256 !== baseline[file].sha256
+          : changedFiles)
       ) {
         conflicts.push(file);
       } else {
         if (!previousRemote && baseline[file]) restored++;
-        updates.push({ file, info, digest });
+        updates.set(file, { info, digest, remote: previousRemote?.fingerprint ?? null });
       }
     }
-    if (conflicts.length) {
+    if (conflicts.length && !changedFiles) {
       const files = conflicts.slice(0, 3).join(', ');
       const suffix = conflicts.length > 3 ? ' and ' + (conflicts.length - 3) + ' more' : '';
       throw new Error(
@@ -267,19 +348,82 @@ export function createIncrementalSync(storage: vscode.Uri) {
           '. Review the remote changes or use RunHop Upload to replace them before launching.'
       );
     }
-    requireSavedProjectFiles(project, outputs);
-    if (updates.length) {
+    const persist = async () => {
+      if (
+        Object.keys(baseline).length !== Object.keys(verified).length ||
+        Object.entries(verified).some(
+          ([file, info]) =>
+            baseline[file]?.local !== info.local || baseline[file]?.remote !== info.remote
+        )
+      ) {
+        await writeBaseline(key, verified);
+      }
+    };
+    if (changedFiles) {
+      let uploaded = 0;
+      const errors = new Map<string, string>();
+      const finished = project.onFinished(({ task, error }) => {
+        if (error && !task.isCancelled()) errors.set(task.srcFsPath, error.message);
+      });
+      const command =
+        'exec ' + [python, '-I', '-S', '-c', publishScript, root].map(quoteShell).join(' ');
+      try {
+        await uploadSourceFiles(project, [...updates.keys()].map(local), {
+          cancellation,
+          showProgress: false,
+          async publish(file, staging) {
+            const relative = path.relative(project.service.baseDir, file).split(path.sep).join('/');
+            const next = updates.get(relative)!;
+            if (isDirty(file) || (await localSource(file))?.fingerprint !== next.info.fingerprint) {
+              throw new Error('The local source changed while uploading ' + relative + '.');
+            }
+            checkCancelled(cancellation);
+            const { client: connected } = await connectSsh(project.service, project.config);
+            const result = await execCommand(connected.getRawClient(), command, {
+              input: JSON.stringify([relative, staging, next.remote, next.digest]),
+              timeout: project.config.operationTimeout || 60_000,
+            });
+            if (result.timedOut || result.code !== 0) {
+              throw new Error(
+                result.timedOut
+                  ? 'Timed out publishing ' + relative + '.'
+                  : result.stderr.trim().split('\n').at(-1) || 'Could not publish ' + relative + '.'
+              );
+            }
+            const fingerprint: unknown = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '');
+            if (typeof fingerprint !== 'string' || !/^-?\d+(?::-?\d+){4}$/.test(fingerprint)) {
+              throw new Error('The remote source verification returned invalid data.');
+            }
+            verified[relative] = {
+              local: next.info.fingerprint,
+              remote: fingerprint,
+              sha256: next.digest,
+            };
+            uploaded++;
+          },
+        });
+      } catch (error) {
+        if (error instanceof vscode.CancellationError || !errors.size) throw error;
+      } finally {
+        finished.dispose();
+        await persist();
+      }
+      return { uploaded, restored, conflicts, errors };
+    }
+    checkSaved();
+    if (updates.size) {
+      const entries = [...updates];
       await uploadSourceFiles(
         project,
-        updates.map(({ file }) => local(file)),
+        entries.map(([file]) => local(file)),
         {
           cancellation,
           onStatus,
         }
       );
       onStatus('Verifying uploaded files…');
-      const deployed = await inspect(updates.map(({ file, info }) => [file, info.size, null]));
-      for (const [index, { file, info, digest }] of updates.entries()) {
+      const deployed = await inspect(entries.map(([file, { info }]) => [file, info.size, null]));
+      for (const [index, [file, { info, digest }]] of entries.entries()) {
         const uploaded = deployed[index];
         if (
           uploaded?.sha256 !== digest ||
@@ -293,17 +437,9 @@ export function createIncrementalSync(storage: vscode.Uri) {
       }
     }
     checkCancelled(cancellation);
-    requireSavedProjectFiles(project, outputs);
-    if (
-      Object.keys(baseline).length !== source.size ||
-      Object.entries(verified).some(
-        ([file, info]) =>
-          baseline[file]?.local !== info.local || baseline[file]?.remote !== info.remote
-      )
-    ) {
-      await writeBaseline(key, verified);
-    }
-    return { uploaded: updates.length, restored };
+    checkSaved();
+    await persist();
+    return { uploaded: updates.size, restored, conflicts: [] };
   }
 
   return { sync };

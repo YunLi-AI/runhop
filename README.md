@@ -95,6 +95,8 @@ The same file is edited by **RunHop Configurations** and used by the RunHop Run 
 
 ![RunHop remote run and debug workflow](assets/runhop.png)
 
+![RunHop breakpoint debugging workflow](assets/runhop_breakpoint.png)
+
 ## How It Works
 
 ```text

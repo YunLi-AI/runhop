@@ -375,10 +375,12 @@ export async function uploadSourceFiles(
     cancellation,
     showProgress = true,
     onStatus,
+    publish,
   }: {
     cancellation?: vscode.CancellationToken;
     showProgress?: boolean;
     onStatus?: ReportStatus;
+    publish?: (local: string, staging: string, destination: string) => Promise<void>;
   } = {}
 ): Promise<number> {
   if (!files.length) {
@@ -475,6 +477,8 @@ export async function uploadSourceFiles(
                 openSsh: config.openSsh,
                 perserveTargetMode: !config.filePerm && !config.dirPerm,
                 beforeOverwrite,
+                publishStaged:
+                  publish && ((staging, destination) => publish(file, staging, destination)),
               },
             }
           )

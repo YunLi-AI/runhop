@@ -17,6 +17,27 @@ let terminal;
 let outputAllowed = true;
 let sessionKey;
 
+function copySelection(event) {
+  if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'c') {
+    return false;
+  }
+  const selection = terminal?.getSelection();
+  if (!selection || !active?.executionId) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  vscode.postMessage({
+    type: 'copyRunOutput',
+    id: active.id,
+    executionId: active.executionId,
+    text: selection,
+  });
+  return true;
+}
+
+window.addEventListener('keydown', copySelection, true);
+
 function command(type, id, executionId) {
   vscode.postMessage({ type, id, executionId });
 }
@@ -168,6 +189,7 @@ function ensureTerminal() {
         vscode.postMessage({ type: 'input', id: active.id, data });
       }
     });
+    terminal.attachCustomKeyEventHandler(event => !copySelection(event));
     new ResizeObserver(resize).observe(container);
     new MutationObserver(() => {
       terminal.options.theme = theme();

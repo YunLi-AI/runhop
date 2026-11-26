@@ -47,6 +47,15 @@
           "default": true,
           "description": "Automatically upload eligible files after editor saves or changes written directly to the local workspace."
         },
+        "deleteRemoteOnUpload": {
+          "type": "boolean",
+          "default": false,
+          "description": "Delete remote files when local files are deleted during upload."
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy URL injected into the launched Python process as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY."
+        },
         "scripts": {
           "type": "object",
           "description": "Script options keyed by workspace-relative Python paths with forward slashes.",
@@ -71,6 +80,18 @@
           "enum": ["incremental", "full", "off"],
           "default": "incremental",
           "description": "Incremental deploys once then uploads changed files. Full compares with the server each launch. Off skips launch sync."
+        },
+        "syncPolicy": {
+          "type": "string",
+          "enum": ["safe", "force_upload", "force_download", "interactive"],
+          "default": "safe",
+          "description": "Conflict policy. Safe stops on remote changes. Force upload replaces the remote version. Force download replaces the local version. Interactive asks per conflict."
+        },
+        "uploadPolicy": {
+          "type": "string",
+          "enum": ["safe", "force_upload", "force_download", "interactive"],
+          "default": "safe",
+          "description": "Conflict policy for automatic and launch uploads."
         }
       },
       "additionalProperties": false
@@ -127,6 +148,10 @@
             "type": "string"
           }
         },
+        "proxy": {
+          "type": "string",
+          "description": "Proxy URL injected into the launched Python process as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY."
+        },
         "download": {
           "type": "array",
           "items": {
@@ -143,6 +168,16 @@
           "type": "string",
           "enum": ["incremental", "full", "off"],
           "description": "Override project synchronization for this script or named configuration."
+        },
+        "syncPolicy": {
+          "type": "string",
+          "enum": ["safe", "force_upload", "force_download", "interactive"],
+          "description": "Override the project conflict policy for this script or named configuration."
+        },
+        "uploadPolicy": {
+          "type": "string",
+          "enum": ["safe", "force_upload", "force_download", "interactive"],
+          "description": "Override the project upload policy for this script or named configuration."
         },
         "runOn": {
           "type": "string",

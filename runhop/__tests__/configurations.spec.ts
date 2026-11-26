@@ -83,6 +83,33 @@ test('named modules resolve for remote launch with the selected interpreter', as
   expect(fileRunsRemotely(settings, workspace, undefined, 'Train')).toBe(true);
 });
 
+test('falls back from a named run configuration to the file and project defaults', () => {
+  const settings = parseSettings(
+    JSON.stringify({
+      targets: [{ name: 'Server', host: 'config-test-alias', sshConfigPath, context: 'src' }],
+      interpreters: {
+        Project: { target: 'Server', path: '/opt/project/bin/python' },
+        File: { target: 'Server', path: '/opt/file/bin/python' },
+      },
+      defaultInterpreter: 'Project',
+      scripts: {
+        'src/train.py': { interpreter: 'File', args: ['--file-only'] },
+      },
+      runConfigurations: {
+        Train: { program: 'src/train.py', args: ['--named-only'] },
+      },
+      activeRunConfiguration: 'Train',
+    })
+  );
+  const selection = configuredScript(settings, workspace, undefined, 'Train');
+  expect(selection.options.interpreter).toBe('File');
+  expect(selection.options.args).toEqual(['--named-only']);
+  expect(configuredScript(settings, workspace, path.join(workspace, 'src', 'train.py')).options).toMatchObject({
+    interpreter: 'File',
+    args: ['--file-only'],
+  });
+});
+
 test('copies, renames and removes a run entry with the persisted selection', async () => {
   let result = await save('{}', { section: 'run', key: 'new', fields: preset() });
   result = await save(result.text, {

@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { createIncrementalSync } from './incrementalSync';
 import { artifactPath, isLocalPathAtOrUnder } from './paths';
-import { configuredOutputs } from './projectSync';
+import { chooseConflict, configuredOutputs } from './projectSync';
 import {
   interpreterFor,
   optionsFor,
@@ -10,22 +10,34 @@ import {
   scriptKey,
   scriptLaunchOptions,
   settingsFile,
+  type SyncPolicy,
+  uploadPolicyFor,
 } from './settings';
 import { matchingTargets, resolveTarget, type RunHopTarget } from './targets';
 import { projectTransfer, projectTransferKey, sourceIgnored } from './transfers';
 
 type QueuedUpload = { key: string; completed: Promise<void> };
+type PendingBatch = { workspace: string; uploads: Promise<QueuedUpload[]> };
 type Destination = {
   key: string;
   target: RunHopTarget;
   python: string;
-  files: Set<string>;
+  policy: SyncPolicy;
+  deleteRemoteOnUpload: boolean;
+  files: Map<string, number>;
   outputs: Set<string>;
 };
-type Batch = { files: Set<string>; started: number; timer?: NodeJS.Timeout };
+type Batch = { files: Map<string, number>; started: number; timer?: NodeJS.Timeout };
 
 const quietTime = 350;
 const maxWait = 1500;
+const maxSourceChangeRetries = 3;
+
+function isSourceChange(message: string): boolean {
+  return /^(?:The local |ValueError: )?source changed (?:during synchronization|while uploading|during deployment)\b/i.test(
+    message
+  );
+}
 
 export function registerSaveUploads(
   context: vscode.ExtensionContext,
@@ -35,8 +47,10 @@ export function registerSaveUploads(
   incremental: ReturnType<typeof createIncrementalSync>
 ) {
   const scheduled = new Map<string, Batch>();
-  const pending = new Set<{ workspace: string; uploads: Promise<QueuedUpload[]> }>();
+  const pending = new Set<PendingBatch>();
   const failures = new Map<string, Map<string, string>>();
+  const observedChanges = new Map<string, Map<string, number>>();
+  let nextRevision = 0;
   const cancellation = new vscode.CancellationTokenSource();
   const failureKey = (workspace: string, key: string) => workspace + '\0' + key;
 
@@ -47,7 +61,8 @@ export function registerSaveUploads(
   }
 
   function transfer(workspace: string, group: Destination): QueuedUpload {
-    const { key, target, python, files, outputs } = group;
+    const { key, target, python, policy, deleteRemoteOnUpload, outputs } = group;
+    const files = [...group.files.keys()];
     const completed = queueTransfer(key, async () => {
       if (cancellation.token.isCancellationRequested) return;
       const project = projectTransfer(target);
@@ -55,16 +70,56 @@ export function registerSaveUploads(
       const previous = failures.get(destination) ?? new Map<string, string>();
       try {
         const excluded = excludeOutputs(key, [...outputs]);
-        const { uploaded, conflicts, errors } = await incremental.sync(
-          project,
-          excluded,
-          python,
-          cancellation.token,
-          () => {},
-          [...files]
-        );
+        let result: Awaited<ReturnType<typeof incremental.sync>> | undefined;
+        for (let attempt = 1; attempt <= maxSourceChangeRetries; attempt++) {
+          try {
+            result = await incremental.sync(
+              project,
+              excluded,
+              python,
+              cancellation.token,
+              () => {},
+              files,
+              {
+                policy,
+                overwriteSavedFiles: policy === 'force_upload',
+                deleteRemoteOnUpload,
+                resolveConflict:
+                  policy === 'safe' || policy === 'interactive'
+                    ? conflict => chooseConflict(project, conflict)
+                    : undefined,
+              }
+            );
+          } catch (error) {
+            if (!isSourceChange(error.message) || attempt === maxSourceChangeRetries) throw error;
+            log.appendLine(
+              'RunHop: Local source changed during synchronization. Retrying ' +
+                (attempt + 1) +
+                '/' +
+                maxSourceChangeRetries +
+                ' for ' +
+                files.join(', ')
+            );
+            await new Promise<void>(resolve => setTimeout(resolve, 100 * attempt));
+            continue;
+          }
+          const transient = [...(result.errors?.values() ?? [])].some(isSourceChange);
+          if (!transient || attempt === maxSourceChangeRetries) break;
+          log.appendLine(
+            'RunHop: Local source changed during upload. Retrying ' +
+              (attempt + 1) +
+              '/' +
+              maxSourceChangeRetries +
+              ' for ' +
+              files.join(', ')
+          );
+          await new Promise<void>(resolve => setTimeout(resolve, 100 * attempt));
+        }
+        const { uploaded, conflicts, errors } = result!;
         const conflictFiles = new Set(
-          conflicts.map(file => path.join(target.service.baseDir, ...file.split('/')))
+          conflicts.map(conflict =>
+            path.join(target.service.baseDir, ...conflict.file.split('/'))
+          )
         );
         let newConflict = false;
         for (const file of files) {
@@ -92,7 +147,10 @@ export function registerSaveUploads(
             'RunHop: Remote contents differ on ' +
               target.config.host +
               '. ' +
-              conflicts.slice(0, 3).join(', ') +
+              conflicts
+                .slice(0, 3)
+                .map(conflict => conflict.file + ' (' + conflict.kind + ')')
+                .join(', ') +
               (conflicts.length > 3 ? ' and ' + (conflicts.length - 3) + ' more' : '') +
               '. Review the changes or use RunHop Upload to replace them.'
           );
@@ -104,6 +162,19 @@ export function registerSaveUploads(
               '. ' +
               errors.values().next().value
           );
+        }
+        const unresolved = new Set<string>([
+          ...(errors?.keys() ?? []),
+          ...conflictFiles,
+        ]);
+        const observed = observedChanges.get(workspace);
+        if (observed) {
+          for (const file of files) {
+            if (!unresolved.has(file) && observed.get(file) === group.files.get(file)) {
+              observed.delete(file);
+            }
+          }
+          if (!observed.size) observedChanges.delete(workspace);
         }
       } catch (error) {
         if (!(error instanceof vscode.CancellationError)) {
@@ -122,7 +193,7 @@ export function registerSaveUploads(
     return { key, completed };
   }
 
-  async function plan(workspace: string, changed: Set<string>): Promise<QueuedUpload[]> {
+  async function plan(workspace: string, changed: Map<string, number>): Promise<QueuedUpload[]> {
     const settings = await readOptionalSettings(workspace);
     if (
       !settings?.targets.length ||
@@ -132,7 +203,7 @@ export function registerSaveUploads(
       return [];
     }
     const groups = new Map<string, Destination>();
-    for (const file of changed) {
+    for (const [file, revision] of changed) {
       if (optionsFor(settings, scriptKey(workspace, file)).runOn === 'local') continue;
       const { program, options } = scriptLaunchOptions(
         settings,
@@ -162,19 +233,23 @@ export function registerSaveUploads(
       }
       const key = projectTransferKey(target);
       const python = interpreter?.path ?? 'python3';
-      const id = key + '\0' + target.service.baseDir + '\0' + python;
+      const policy = uploadPolicyFor(settings, options.uploadPolicy, options.syncPolicy);
+      const deleteRemoteOnUpload = settings.deleteRemoteOnUpload === true;
+      const id = key + '\0' + target.service.baseDir + '\0' + python + '\0' + policy;
       let group = groups.get(id);
       if (!group) {
         group = {
           key,
           target,
           python,
-          files: new Set(),
+          policy,
+          deleteRemoteOnUpload,
+          files: new Map(),
           outputs: new Set(configuredOutputs(settings, target)),
         };
         groups.set(id, group);
       }
-      group.files.add(file);
+      group.files.set(file, revision);
       options.download?.map(artifactPath).forEach(output => group.outputs.add(output));
     }
     return [...groups.values()].map(group => transfer(workspace, group));
@@ -202,8 +277,12 @@ export function registerSaveUploads(
     if (!vscode.workspace.isTrusted || vscode.env.remoteName || uri.scheme !== 'file') return;
     const workspace = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
     if (!workspace || uri.fsPath === path.join(workspace, settingsFile)) return;
-    const batch = scheduled.get(workspace) ?? { files: new Set<string>(), started: Date.now() };
-    batch.files.add(uri.fsPath);
+    const revision = ++nextRevision;
+    const observed = observedChanges.get(workspace) ?? new Map<string, number>();
+    observed.set(uri.fsPath, revision);
+    observedChanges.set(workspace, observed);
+    const batch = scheduled.get(workspace) ?? { files: new Map<string, number>(), started: Date.now() };
+    batch.files.set(uri.fsPath, revision);
     clearTimeout(batch.timer);
     batch.timer = setTimeout(
       () => flush(workspace),
@@ -217,11 +296,13 @@ export function registerSaveUploads(
     watcher,
     watcher.onDidCreate(enqueue),
     watcher.onDidChange(enqueue),
+    watcher.onDidDelete(enqueue),
     vscode.workspace.onDidSaveTextDocument(document => enqueue(document.uri)),
     {
       dispose() {
         for (const { timer } of scheduled.values()) clearTimeout(timer);
         scheduled.clear();
+        observedChanges.clear();
         cancellation.cancel();
         cancellation.dispose();
       },
@@ -230,15 +311,21 @@ export function registerSaveUploads(
 
   return {
     async wait(workspace: string, key: string): Promise<void> {
-      flush(workspace);
-      await Promise.all(
-        [...pending]
-          .filter(entry => entry.workspace === workspace)
-          .map(async entry => {
+      const waited = new Set<PendingBatch>();
+      for (;;) {
+        flush(workspace);
+        const entries = [...pending].filter(
+          entry => entry.workspace === workspace && !waited.has(entry)
+        );
+        if (!entries.length) break;
+        await Promise.all(
+          entries.map(async entry => {
+            waited.add(entry);
             const jobs = await entry.uploads;
             await Promise.all(jobs.filter(job => job.key === key).map(job => job.completed));
           })
-      );
+        );
+      }
       const previous = failures.get(failureKey(workspace, key))?.entries().next().value;
       if (previous) {
         const [file, message] = previous;
@@ -261,6 +348,11 @@ export function registerSaveUploads(
         if (previous.size) return;
       }
       failures.delete(destination);
+    },
+    changedFiles(workspace: string, scope: string): string[] {
+      return [...(observedChanges.get(workspace)?.keys() ?? [])].filter(file =>
+        isLocalPathAtOrUnder(scope, file)
+      );
     },
   };
 }

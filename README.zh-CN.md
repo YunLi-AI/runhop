@@ -67,7 +67,9 @@ RunHop 是一个 VS Code 扩展，让你在本地编写 Python 代码，直接�
   },
   "defaultInterpreter": "REMOTE_INTERPRETER_NAME",
   "syncMode": "incremental",
+  "uploadPolicy": "safe",
   "uploadOnSave": true,
+  "proxy": "http://127.0.0.1:7890",
   "runConfigurations": {
     "MAIN_RUN": {
       "program": "scripts/train.py",
@@ -89,7 +91,15 @@ RunHop 是一个 VS Code 扩展，让你在本地编写 Python 代码，直接�
 10. 校验 JSON，确认选中的脚本在本机存在，并说明当前激活的 RunHop 配置。不要修改本机 Conda 环境，也不要为了初始化 RunHop 在服务器上安装依赖。
 ```
 
+`uploadPolicy` 用于控制本地和远端文件冲突。`safe` 在覆盖前停止，`force_upload` 用本地文件替换远端文件，`force_download` 用远端文件替换本地文件，`interactive` 逐个询问冲突处理方式。`proxy` 会通过标准 HTTP 和 SOCKS 代理环境变量注入启动的 Python 进程。
+
+使用 `scp` 或远程终端完成外部同步后，可以从项目右键菜单执行 **RunHop: Refresh Sync Baseline**。它只记录当前本地和远端的 fingerprint 与哈希，不会上传或下载文件。
+
+项目级解释器填写在 `defaultInterpreter`。`scripts` 下可以按 Python 文件分别覆盖解释器、参数、工作目录、环境变量和调试选项。`runConfigurations` 中的命名配置可以从工具栏选择，并在该次运行中优先于项目和文件级默认设置。
+
 **RunHop 配置中心**和 Run、Debug 命令使用同一份 `.vscode/runhop.json`。没有这个文件不会禁用扩展，需要远程运行时再创建即可。
+
+同步基线现在保存在项目目录的 `.vscode/runhop-state/source-baselines/` 中。这里仅保存文件指纹和哈希，不保存文件内容。删除这些记录会重置冲突历史，下次同步时会重新建立基线。
 
 ## 效果截图
 
@@ -114,7 +124,7 @@ Local VS Code
 
 ## What's Next?
 
-- 更完善的 PyCharm 风格调试体验
+- 更完善的 Debug 调试体验
 - NumPy / PyTorch Tensor 调试增强
 - 多进程与分布式 Python 调试
 - **Agent-Friendly CLI** — 让 Codex 等 AI 工具复用已配置的远程执行环境，无需重复 SSH（规划中）

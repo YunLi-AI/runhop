@@ -2,7 +2,7 @@
   "name": "runhop",
   "displayName": "RunHop",
   "description": "Synchronize a local workspace and run or debug Python on an SSH server.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "yunli-ai",
   "author": "YunLi AI",
   "homepage": "https://github.com/YunLi-AI/runhop",
@@ -123,6 +123,11 @@
         "category": "RunHop"
       },
       {
+        "command": "runhop.project.refreshBaseline",
+        "title": "Refresh Sync Baseline",
+        "category": "RunHop"
+      },
+      {
         "command": "runhop.project.settings",
         "title": "Open Project Sync Settings",
         "category": "RunHop"
@@ -223,9 +228,13 @@
           "group": "2_settings@1"
         },
         {
+          "command": "runhop.project.refreshBaseline",
+          "group": "2_settings@2"
+        },
+        {
           "command": "runhop.project.settings",
           "when": "explorerResourceIsFolder",
-          "group": "2_settings@2"
+          "group": "2_settings@3"
         }
       ],
       "debug/variables/context": [
@@ -397,6 +406,10 @@
                 },
                 "default": {}
               },
+              "proxy": {
+                "type": "string",
+                "description": "Proxy URL injected as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY before Python starts."
+              },
               "download": {
                 "type": "array",
                 "items": {
@@ -421,6 +434,26 @@
                   "off"
                 ],
                 "description": "Override project source synchronization for this launch."
+              },
+              "syncPolicy": {
+                "type": "string",
+                "enum": [
+                  "safe",
+                  "force_upload",
+                  "force_download",
+                  "interactive"
+                ],
+                "description": "Override the project conflict policy for this launch."
+              },
+              "uploadPolicy": {
+                "type": "string",
+                "enum": [
+                  "safe",
+                  "force_upload",
+                  "force_download",
+                  "interactive"
+                ],
+                "description": "Override the project upload policy for this launch."
               }
             }
           }

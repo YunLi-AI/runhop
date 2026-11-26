@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
+import {
+  copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile,
+} from 'node:fs/promises';
 import * as path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import * as vscode from 'vscode';
 import { resolveRemotePath } from './debuggerHelper';
 import { isLocalPathAtOrUnder, quoteShell } from './paths';
 import { connectSsh, type RunHopTarget } from './targets';
 import { isNotFoundError } from './transport/core';
+import type FileSystem from './transport/core/fs/fileSystem';
 import { execCommand } from './transport/core/remote-client/exec';
 import {
   type ProjectTransfer,
@@ -15,11 +19,43 @@ import {
   sourceIgnored,
   uploadSourceFiles,
 } from './transfers';
+import type { SyncPolicy } from './settings';
 
 type Baseline = Record<string, { local: string; remote: string; sha256: string }>;
 type Source = { fingerprint: string; size: number };
 type RemoteSource = { fingerprint: string; sha256?: string };
 type Inspection = [file: string, size: number, previous: string | null, previousSize?: number];
+
+export type SyncConflictKind =
+  | 'local_modified'
+  | 'remote_modified'
+  | 'both_modified'
+  | 'local_deleted'
+  | 'remote_deleted'
+  | 'untracked_remote';
+
+export interface SyncConflict {
+  file: string;
+  kind: SyncConflictKind;
+  localFingerprint: string | null;
+  remoteFingerprint: string | null;
+  baselineLocalFingerprint: string | null;
+  baselineRemoteFingerprint: string | null;
+  localSha256: string | null;
+  remoteSha256: string | null;
+  baselineSha256: string | null;
+}
+
+export interface SyncOptions {
+  policy?: SyncPolicy;
+  overwriteSavedFiles?: boolean;
+  resolveConflict?: (
+    conflict: SyncConflict
+  ) => Promise<'local' | 'remote' | 'baseline' | 'skip'>;
+  scope?: string;
+  refreshOnly?: boolean;
+  deleteRemoteOnUpload?: boolean;
+}
 
 const inspectScript = [
   'import hashlib, json, os, stat, sys',
@@ -65,6 +101,20 @@ const publishScript = [
   '    raise ValueError("Unsafe remote source path: " + relative)',
   'def fingerprint(info):',
   '    return ":".join(map(str, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)))',
+  'if digest is None:',
+  '    staged = os.lstat(staging)',
+  '    if not stat.S_ISREG(staged.st_mode):',
+  '        raise ValueError("Staged source is not a regular file: " + relative)',
+  '    os.replace(staging, file)',
+  '    receipt = None',
+  '    try:',
+  '        info = os.lstat(file)',
+  '        if (info.st_dev, info.st_ino) == (staged.st_dev, staged.st_ino):',
+  '            receipt = fingerprint(info)',
+  '    except OSError:',
+  '        pass',
+  '    json.dump(receipt, sys.stdout)',
+  '    sys.exit(0)',
   'with open(staging, "rb") as stream:',
   '    staged = os.fstat(stream.fileno())',
   '    if not stat.S_ISREG(staged.st_mode):',
@@ -94,6 +144,19 @@ function isDirty(file: string): boolean {
   );
 }
 
+async function waitForDocumentClean(
+  file: string,
+  cancellation: vscode.CancellationToken,
+  timeout = 1_500
+): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+  while (isDirty(file) && Date.now() < deadline) {
+    checkCancelled(cancellation);
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+  return !isDirty(file);
+}
+
 function checkCancelled(cancellation: vscode.CancellationToken): void {
   if (cancellation.isCancellationRequested) throw new vscode.CancellationError();
 }
@@ -112,14 +175,39 @@ async function localSource(file: string): Promise<Source | undefined> {
   }
 }
 
+export async function waitForStableSource(
+  file: string,
+  cancellation: vscode.CancellationToken,
+  timeout = 1_500
+): Promise<Source | undefined> {
+  const deadline = Date.now() + timeout;
+  let previous: Source | undefined;
+  let stableReads = 0;
+  while (Date.now() < deadline) {
+    checkCancelled(cancellation);
+    const current = await localSource(file);
+    if (!current) return undefined;
+    if (previous?.fingerprint === current.fingerprint) {
+      stableReads++;
+      if (stableReads >= 2) return current;
+    } else {
+      previous = current;
+      stableReads = 1;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+  return previous;
+}
+
 async function localSnapshot(
   project: RunHopTarget,
   outputs: string[],
-  cancellation: vscode.CancellationToken
+  cancellation: vscode.CancellationToken,
+  scope = project.service.baseDir
 ): Promise<Map<string, Source>> {
   const root = project.service.baseDir;
   const files = new Map<string, Source>();
-  const directories = [root];
+  const directories = [scope];
   while (directories.length) {
     checkCancelled(cancellation);
     const directory = directories.pop()!;
@@ -138,7 +226,7 @@ async function localSnapshot(
       checkCancelled(cancellation);
       await Promise.all(
         paths.slice(offset, offset + 32).map(async file => {
-          const source = await localSource(file);
+          const source = await waitForStableSource(file, cancellation);
           if (source) files.set(path.relative(root, file).split(path.sep).join('/'), source);
         })
       );
@@ -151,7 +239,8 @@ async function changedSnapshot(
   project: RunHopTarget,
   outputs: string[],
   changed: readonly string[],
-  cancellation: vscode.CancellationToken
+  cancellation: vscode.CancellationToken,
+  overwriteSavedFiles: boolean
 ): Promise<Map<string, Source>> {
   const root = project.service.baseDir;
   const canonical = await realpath(root);
@@ -161,11 +250,13 @@ async function changedSnapshot(
     if (
       !isLocalPathAtOrUnder(root, file) ||
       sourceIgnored(project, file, outputs) ||
-      isDirty(file)
+      (!overwriteSavedFiles && !(await waitForDocumentClean(file, cancellation)))
     ) {
       continue;
     }
-    const info = await localSource(file);
+    const info = overwriteSavedFiles
+      ? await localSource(file)
+      : await waitForStableSource(file, cancellation);
     if (!info) continue;
     const resolved = await realpath(file).catch(error => {
       if (!isNotFoundError(error)) throw error;
@@ -177,19 +268,41 @@ async function changedSnapshot(
   return source;
 }
 
-async function localDigest(file: string, expected: Source, cancellation: vscode.CancellationToken) {
+async function sourceDigest(file: string, cancellation: vscode.CancellationToken) {
   const digest = createHash('sha256');
   for await (const chunk of createReadStream(file)) {
     checkCancelled(cancellation);
     digest.update(chunk);
   }
-  if ((await localSource(file))?.fingerprint !== expected.fingerprint) {
-    throw new Error('Source changed during synchronization. Run again after saving ' + file + '.');
-  }
   return digest.digest('hex');
 }
 
-async function readBaseline(file: string): Promise<Baseline> {
+async function localDigest(file: string, expected: Source, cancellation: vscode.CancellationToken) {
+  const digest = await sourceDigest(file, cancellation);
+  if ((await localSource(file))?.fingerprint !== expected.fingerprint) {
+    throw new Error('Source changed during synchronization while reading ' + file + '.');
+  }
+  return digest;
+}
+
+async function downloadRemoteFile(
+  remote: Pick<FileSystem, 'get'>,
+  remotePath: string,
+  localPath: string,
+  cancellation: vscode.CancellationToken
+): Promise<void> {
+  await mkdir(path.dirname(localPath), { recursive: true });
+  const temporary = localPath + '.' + randomUUID() + '.runhop-download';
+  try {
+    await pipeline(await remote.get(remotePath), createWriteStream(temporary));
+    checkCancelled(cancellation);
+    await rename(temporary, localPath);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+async function readBaseline(file: string): Promise<Baseline | undefined> {
   try {
     const snapshot = JSON.parse(await readFile(file, 'utf8'));
     if (
@@ -208,9 +321,9 @@ async function readBaseline(file: string): Promise<Baseline> {
       return snapshot;
     }
   } catch (error) {
-    if (!(error instanceof SyntaxError) && !isNotFoundError(error)) throw error;
+    if (!isNotFoundError(error) && !(error instanceof SyntaxError)) throw error;
   }
-  return Object.create(null);
+  return undefined;
 }
 
 async function writeBaseline(file: string, snapshot: Baseline): Promise<void> {
@@ -224,8 +337,34 @@ async function writeBaseline(file: string, snapshot: Baseline): Promise<void> {
   }
 }
 
-export function createIncrementalSync(storage: vscode.Uri) {
-  const directory = vscode.Uri.joinPath(storage, 'source-baselines').fsPath;
+function baselineName(project: ProjectTransfer): string {
+  const id = createHash('sha256')
+    .update(
+      project.service.workspace + '\0' + project.service.baseDir + '\0' + projectTransferKey(project)
+    )
+    .digest('hex');
+  return id + '.v2.json';
+}
+
+function baselineDirectory(project: ProjectTransfer): string {
+  return path.join(project.service.workspace, '.vscode', 'runhop-state', 'source-baselines');
+}
+
+export function createIncrementalSync(legacyStorage?: vscode.Uri) {
+  const legacyDirectory = legacyStorage
+    ? vscode.Uri.joinPath(legacyStorage, 'source-baselines').fsPath
+    : undefined;
+
+  async function hasBaseline(project: ProjectTransfer): Promise<boolean> {
+    const key = path.join(baselineDirectory(project), baselineName(project));
+    try {
+      if (!(await lstat(key + '.complete')).isFile()) return false;
+      return (await readBaseline(key)) !== undefined;
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      return false;
+    }
+  }
 
   async function sync(
     project: ProjectTransfer,
@@ -233,33 +372,73 @@ export function createIncrementalSync(storage: vscode.Uri) {
     python: string,
     cancellation: vscode.CancellationToken,
     onStatus: (message: string) => void,
-    changedFiles?: readonly string[]
+    changedFiles?: readonly string[],
+    options: SyncOptions = {}
   ): Promise<{
     uploaded: number;
     restored: number;
-    conflicts: string[];
+    conflicts: SyncConflict[];
     errors?: Map<string, string>;
   }> {
+    const policy = options.policy ?? 'safe';
+    const overwriteSavedFiles = Boolean(
+      changedFiles && policy === 'force_upload' && options.overwriteSavedFiles
+    );
     const checkSaved = () => {
       if (!changedFiles) requireSavedProjectFiles(project, outputs);
     };
     checkSaved();
-    const id = createHash('sha256')
-      .update(
-        project.service.workspace +
-          '\0' +
-          project.service.baseDir +
-          '\0' +
-          projectTransferKey(project)
-      )
-      .digest('hex');
-    const key = path.join(directory, id + '.v2.json');
-    const baseline = await readBaseline(key);
+    const name = baselineName(project);
+    const key = path.join(baselineDirectory(project), name);
+    const legacyKey = legacyDirectory ? path.join(legacyDirectory, name) : undefined;
+    const localBaseline = await readBaseline(key);
+    const legacyBaseline =
+      localBaseline === undefined && legacyKey && legacyKey !== key
+        ? await readBaseline(legacyKey)
+        : undefined;
+    const baseline = localBaseline ?? legacyBaseline ?? Object.create(null);
+    const migrated = localBaseline === undefined && legacyBaseline !== undefined;
+    const verified: Baseline = Object.assign(
+      Object.create(null),
+      changedFiles || options.scope ? baseline : {}
+    );
+    const wholeProject =
+      !changedFiles &&
+      !options.refreshOnly &&
+      (!options.scope || options.scope === project.service.baseDir);
+    const persist = async (complete = false) => {
+      if (
+        migrated ||
+        (complete && localBaseline === undefined) ||
+        Object.keys(baseline).length !== Object.keys(verified).length ||
+        Object.entries(verified).some(
+          ([file, info]) =>
+            baseline[file]?.local !== info.local || baseline[file]?.remote !== info.remote
+        )
+      ) {
+        await writeBaseline(key, verified);
+      }
+      if (migrated && legacyKey && legacyKey !== key) {
+        await rm(legacyKey, { force: true });
+      }
+      if (complete) {
+        await writeFile(key + '.complete', '', { flag: 'wx' }).catch(error => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+      }
+    };
     onStatus('Checking saved project files…');
     const source = changedFiles
-      ? await changedSnapshot(project, outputs, changedFiles, cancellation)
-      : await localSnapshot(project, outputs, cancellation);
-    if (!source.size) return { uploaded: 0, restored: 0, conflicts: [] };
+      ? await changedSnapshot(project, outputs, changedFiles, cancellation, overwriteSavedFiles)
+      : await localSnapshot(project, outputs, cancellation, options.scope);
+    const hasTrackedFiles = Object.keys(baseline).some(file => {
+      const localPath = path.join(project.service.baseDir, ...file.split('/'));
+      return !options.scope || isLocalPathAtOrUnder(options.scope, localPath);
+    });
+    if (!source.size && !hasTrackedFiles) {
+      if (wholeProject) await persist(true);
+      return { uploaded: 0, restored: 0, conflicts: [] };
+    }
     const local = (file: string) => path.join(project.service.baseDir, ...file.split('/'));
     const { fs, client } = await connectSsh(project.service, project.config);
     checkCancelled(cancellation);
@@ -297,68 +476,244 @@ export function createIncrementalSync(storage: vscode.Uri) {
     };
 
     onStatus('Verifying ' + source.size + ' remote files on ' + project.config.host + '…');
-    const files: Inspection[] = [...source].map(([file, info]) => [
-      file,
-      info.size,
-      baseline[file]?.local === info.fingerprint ? baseline[file].remote : null,
-      Number(baseline[file]?.remote.split(':')[2] ?? -1),
-    ]);
-    const remote = await inspect(files);
-    const verified: Baseline = Object.assign(Object.create(null), changedFiles ? baseline : {});
+    const files: Inspection[] = overwriteSavedFiles
+      ? []
+      : [...source].map(([file, info]) => [
+          file,
+          info.size,
+          baseline[file]?.local === info.fingerprint ? baseline[file].remote : null,
+          Number(baseline[file]?.remote.split(':')[2] ?? -1),
+        ]);
+    const changedSet = changedFiles
+      ? new Set(changedFiles.map(file => path.relative(project.service.baseDir, file).split(path.sep).join('/')))
+      : undefined;
+    for (const file of Object.keys(baseline)) {
+      const localPath = path.join(project.service.baseDir, ...file.split('/'));
+      if (
+        !source.has(file) &&
+        (!changedSet || changedSet.has(file)) &&
+        (!overwriteSavedFiles || !sourceIgnored(project, localPath, outputs)) &&
+        (!changedFiles || !isDirty(localPath)) &&
+        (!options.scope || isLocalPathAtOrUnder(options.scope, localPath))
+      ) {
+        files.push([file, 0, baseline[file].remote, Number(baseline[file].remote.split(':')[2] ?? -1)]);
+      }
+    }
+    const remote = files.length ? await inspect(files) : [];
     const updates = new Map<string, { info: Source; digest: string; remote: string | null }>();
-    const conflicts: string[] = [];
-    let restored = 0;
-    for (const [index, [file, , previous]] of files.entries()) {
+    if (overwriteSavedFiles) {
+      for (const [file, info] of source) updates.set(file, { info, digest: '', remote: null });
+    }
+    const deletions = new Set<string>();
+    const localDeletions = new Set<string>();
+    const downloads = new Set<string>();
+    const conflicts: SyncConflict[] = [];
+    const pending = new Map<string, { conflict: SyncConflict; info?: Source; digest?: string; remote?: RemoteSource | null }>();
+    const restored = 0;
+    for (const [index, [file]] of files.entries()) {
       checkCancelled(cancellation);
       const previousRemote = remote[index];
-      const info = source.get(file)!;
-      if (previousRemote?.fingerprint === previous) {
-        verified[file] = baseline[file];
+      const info = source.get(file);
+      const saved = baseline[file];
+      if (!info) {
+        if (!previousRemote) {
+          delete verified[file];
+        } else {
+          const conflict: SyncConflict = {
+            file,
+            kind: 'local_deleted',
+            localFingerprint: null,
+            remoteFingerprint: previousRemote.fingerprint,
+            baselineLocalFingerprint: saved?.local ?? null,
+            baselineRemoteFingerprint: saved?.remote ?? null,
+            localSha256: null,
+            remoteSha256: previousRemote.sha256 ?? null,
+            baselineSha256: saved?.sha256 ?? null,
+          };
+          conflicts.push(conflict);
+          pending.set(file, { conflict, remote: previousRemote });
+          if (policy === 'force_upload' && options.deleteRemoteOnUpload) deletions.add(file);
+        }
         continue;
       }
       const digest = await localDigest(local(file), info, cancellation);
-      if (previousRemote?.sha256 === digest) {
+      const remoteChanged = saved
+        ? !previousRemote ||
+          (previousRemote.fingerprint !== saved.remote && previousRemote.sha256 !== saved.sha256)
+        : Boolean(previousRemote);
+      const localChanged = !saved || info.fingerprint !== saved.local;
+      if (
+        policy === 'force_download' &&
+        saved &&
+        previousRemote &&
+        localChanged &&
+        previousRemote.sha256 !== digest
+      ) {
+        downloads.add(file);
+        continue;
+      }
+    if (
+      previousRemote &&
+      (previousRemote.sha256 === digest ||
+        (previousRemote.fingerprint === saved?.remote && saved.sha256 === digest))
+    ) {
         verified[file] = {
           local: info.fingerprint,
           remote: previousRemote.fingerprint,
           sha256: digest,
         };
-      } else if (
-        previousRemote &&
-        (baseline[file]
-          ? previousRemote.fingerprint !== baseline[file].remote &&
-            previousRemote.sha256 !== baseline[file].sha256
-          : changedFiles)
-      ) {
-        conflicts.push(file);
+      } else if (!remoteChanged) {
+        if (options.refreshOnly && previousRemote) {
+          verified[file] = {
+            local: info.fingerprint,
+            remote: previousRemote.fingerprint,
+            sha256: digest,
+          };
+        } else if (!options.refreshOnly) {
+          updates.set(file, { info, digest, remote: previousRemote?.fingerprint ?? null });
+        }
+      } else if (saved && !localChanged && !previousRemote) {
+        const conflict: SyncConflict = {
+          file,
+          kind: 'remote_deleted',
+          localFingerprint: info.fingerprint,
+          remoteFingerprint: null,
+          baselineLocalFingerprint: saved.local,
+          baselineRemoteFingerprint: saved.remote,
+          localSha256: digest,
+          remoteSha256: null,
+          baselineSha256: saved.sha256,
+        };
+        conflicts.push(conflict);
+        pending.set(file, { conflict, info, digest, remote: previousRemote });
       } else {
-        if (!previousRemote && baseline[file]) restored++;
-        updates.set(file, { info, digest, remote: previousRemote?.fingerprint ?? null });
+        const conflict: SyncConflict = {
+          file,
+          kind: !saved
+            ? 'untracked_remote'
+            : !previousRemote
+              ? 'local_modified'
+            : localChanged
+              ? 'both_modified'
+              : 'remote_modified',
+          localFingerprint: info.fingerprint,
+          remoteFingerprint: previousRemote?.fingerprint ?? null,
+          baselineLocalFingerprint: saved?.local ?? null,
+          baselineRemoteFingerprint: saved?.remote ?? null,
+          localSha256: digest,
+          remoteSha256: previousRemote?.sha256 ?? null,
+          baselineSha256: saved?.sha256 ?? null,
+        };
+        conflicts.push(conflict);
+        pending.set(file, { conflict, info, digest, remote: previousRemote });
+        if (policy === 'force_upload') {
+          updates.set(file, { info, digest, remote: previousRemote?.fingerprint ?? null });
+        }
+      }
+      if (saved && !previousRemote && localChanged && policy === 'force_upload') {
+        updates.set(file, { info, digest, remote: null });
       }
     }
-    if (conflicts.length && !changedFiles) {
-      const files = conflicts.slice(0, 3).join(', ');
+    if (options.resolveConflict && (policy === 'safe' || policy === 'interactive')) {
+      for (const entry of pending.values()) {
+        const action = await options.resolveConflict(entry.conflict);
+        if (action === 'local') {
+          if (entry.info && entry.digest !== undefined) {
+            updates.set(entry.conflict.file, {
+              info: entry.info,
+              digest: entry.digest,
+              remote: entry.remote?.fingerprint ?? null,
+            });
+          } else {
+            deletions.add(entry.conflict.file);
+          }
+        } else if (action === 'remote' && entry.remote) {
+          downloads.add(entry.conflict.file);
+        } else if (action === 'remote' && !entry.remote) {
+          delete verified[entry.conflict.file];
+          localDeletions.add(entry.conflict.file);
+        } else if (action === 'baseline') {
+          if (entry.remote) {
+            verified[entry.conflict.file] = {
+              local: entry.info?.fingerprint ?? baseline[entry.conflict.file]?.local ?? entry.remote.fingerprint,
+              remote: entry.remote.fingerprint,
+              sha256: entry.remote.sha256 ?? '',
+            };
+          } else {
+            delete verified[entry.conflict.file];
+          }
+        }
+        if (action !== 'skip') {
+          const index = conflicts.indexOf(entry.conflict);
+          if (index >= 0) conflicts.splice(index, 1);
+        }
+      }
+    } else if (policy === 'force_download') {
+      for (const entry of pending.values()) {
+        if (entry.remote) downloads.add(entry.conflict.file);
+        else {
+          delete verified[entry.conflict.file];
+          localDeletions.add(entry.conflict.file);
+        }
+      }
+      conflicts.length = 0;
+    } else if (policy === 'force_upload') {
+      const unresolved = options.deleteRemoteOnUpload
+        ? []
+        : conflicts.filter(conflict => conflict.kind === 'local_deleted');
+      conflicts.length = 0;
+      conflicts.push(...unresolved);
+    }
+    for (const file of deletions) {
+      checkCancelled(cancellation);
+      try {
+        await fs.unlink(path.posix.join(root, ...file.split('/')));
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+      delete verified[file];
+    }
+    for (const file of localDeletions) {
+      checkCancelled(cancellation);
+      await rm(local(file), { force: true });
+      delete verified[file];
+    }
+    for (const file of downloads) {
+      checkCancelled(cancellation);
+      const remotePath = path.posix.join(root, ...file.split('/'));
+      const remoteEntry = remote[files.findIndex(entry => entry[0] === file)];
+      if (!remoteEntry) {
+        await rm(local(file), { force: true });
+        delete verified[file];
+        continue;
+      }
+      await downloadRemoteFile(fs, remotePath, local(file), cancellation);
+      const downloaded = await localSource(local(file));
+      if (!downloaded) throw new Error('The remote file disappeared during download: ' + file);
+      const digest = await localDigest(local(file), downloaded, cancellation);
+      verified[file] = {
+        local: downloaded.fingerprint,
+        remote: remoteEntry.fingerprint,
+        sha256: remoteEntry.sha256 ?? digest,
+      };
+    }
+    if (
+      conflicts.length &&
+      (policy === 'safe' || (policy === 'interactive' && !options.resolveConflict)) &&
+      !changedFiles &&
+      !options.refreshOnly
+    ) {
+      const names = conflicts.slice(0, 3).map(conflict => conflict.file).join(', ');
       const suffix = conflicts.length > 3 ? ' and ' + (conflicts.length - 3) + ' more' : '';
       throw new Error(
         'Remote source changed on ' +
           project.config.host +
           ': ' +
-          files +
+          names +
           suffix +
           '. Review the remote changes or use RunHop Upload to replace them before launching.'
       );
     }
-    const persist = async () => {
-      if (
-        Object.keys(baseline).length !== Object.keys(verified).length ||
-        Object.entries(verified).some(
-          ([file, info]) =>
-            baseline[file]?.local !== info.local || baseline[file]?.remote !== info.remote
-        )
-      ) {
-        await writeBaseline(key, verified);
-      }
-    };
     if (changedFiles) {
       let uploaded = 0;
       const errors = new Map<string, string>();
@@ -367,20 +722,44 @@ export function createIncrementalSync(storage: vscode.Uri) {
       });
       const command =
         'exec ' + [python, '-I', '-S', '-c', publishScript, root].map(quoteShell).join(' ');
+      const relativePath = (file: string) =>
+        path.relative(project.service.baseDir, file).split(path.sep).join('/');
       try {
         await uploadSourceFiles(project, [...updates.keys()].map(local), {
           cancellation,
           showProgress: false,
+          captureSource: overwriteSavedFiles
+            ? async (file, snapshot) => {
+                const next = updates.get(relativePath(file))!;
+                try {
+                  await copyFile(file, snapshot, constants.COPYFILE_FICLONE);
+                } catch (error) {
+                  if (!isNotFoundError(error)) throw error;
+                }
+                if ((await localSource(file))?.fingerprint !== next.info.fingerprint) {
+                  throw new Error('Source changed during synchronization while reading ' + file + '.');
+                }
+                next.digest = await sourceDigest(snapshot, cancellation);
+              }
+            : undefined,
           async publish(file, staging) {
-            const relative = path.relative(project.service.baseDir, file).split(path.sep).join('/');
+            const relative = relativePath(file);
             const next = updates.get(relative)!;
-            if (isDirty(file) || (await localSource(file))?.fingerprint !== next.info.fingerprint) {
+            if (
+              !overwriteSavedFiles &&
+              (isDirty(file) || (await localSource(file))?.fingerprint !== next.info.fingerprint)
+            ) {
               throw new Error('The local source changed while uploading ' + relative + '.');
             }
             checkCancelled(cancellation);
             const { client: connected } = await connectSsh(project.service, project.config);
             const result = await execCommand(connected.getRawClient(), command, {
-              input: JSON.stringify([relative, staging, next.remote, next.digest]),
+              input: JSON.stringify([
+                relative,
+                staging,
+                next.remote,
+                overwriteSavedFiles ? null : next.digest,
+              ]),
               timeout: project.config.operationTimeout || 60_000,
             });
             if (result.timedOut || result.code !== 0) {
@@ -391,6 +770,11 @@ export function createIncrementalSync(storage: vscode.Uri) {
               );
             }
             const fingerprint: unknown = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '');
+            // The optional baseline describes the particular file we published.
+            if (overwriteSavedFiles && fingerprint === null) {
+              uploaded++;
+              return;
+            }
             if (typeof fingerprint !== 'string' || !/^-?\d+(?::-?\d+){4}$/.test(fingerprint)) {
               throw new Error('The remote source verification returned invalid data.');
             }
@@ -411,36 +795,41 @@ export function createIncrementalSync(storage: vscode.Uri) {
       return { uploaded, restored, conflicts, errors };
     }
     checkSaved();
-    if (updates.size) {
-      const entries = [...updates];
-      await uploadSourceFiles(
-        project,
-        entries.map(([file]) => local(file)),
-        {
-          cancellation,
-          onStatus,
+    let complete = false;
+    try {
+      if (updates.size) {
+        const entries = [...updates];
+        await uploadSourceFiles(
+          project,
+          entries.map(([file]) => local(file)),
+          {
+            cancellation,
+            onStatus,
+          }
+        );
+        onStatus('Verifying uploaded files…');
+        const deployed = await inspect(entries.map(([file, { info }]) => [file, info.size, null]));
+        for (const [index, [file, { info, digest }]] of entries.entries()) {
+          const uploaded = deployed[index];
+          if (
+            uploaded?.sha256 !== digest ||
+            (await localSource(local(file)))?.fingerprint !== info.fingerprint
+          ) {
+            throw new Error(
+              'Source changed during deployment of ' + file + '. Run again after saving.'
+            );
+          }
+          verified[file] = { local: info.fingerprint, remote: uploaded.fingerprint, sha256: digest };
         }
-      );
-      onStatus('Verifying uploaded files…');
-      const deployed = await inspect(entries.map(([file, { info }]) => [file, info.size, null]));
-      for (const [index, [file, { info, digest }]] of entries.entries()) {
-        const uploaded = deployed[index];
-        if (
-          uploaded?.sha256 !== digest ||
-          (await localSource(local(file)))?.fingerprint !== info.fingerprint
-        ) {
-          throw new Error(
-            'Source changed during deployment of ' + file + '. Run again after saving.'
-          );
-        }
-        verified[file] = { local: info.fingerprint, remote: uploaded.fingerprint, sha256: digest };
       }
+      checkCancelled(cancellation);
+      checkSaved();
+      complete = wholeProject && conflicts.length === 0;
+    } finally {
+      await persist(complete);
     }
-    checkCancelled(cancellation);
-    checkSaved();
-    await persist();
-    return { uploaded: updates.size, restored, conflicts: [] };
+    return { uploaded: updates.size, restored, conflicts };
   }
 
-  return { sync };
+  return { sync, hasBaseline };
 }

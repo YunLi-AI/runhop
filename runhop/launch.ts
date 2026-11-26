@@ -6,12 +6,12 @@ import { AdapterLaunch, PythonAdapter, SessionAdapter } from './adapter';
 import { registerControls } from './controls';
 import type { ConfigurationEditorProject } from './configurationsPanel';
 import { prepareLocalDebugger, resolveRemotePath, startRemoteDebugger } from './debuggerHelper';
-import { DirectRun } from './directRun';
+import { DirectRun, displayCommandFor } from './directRun';
 import { registerFileLaunch } from './fileLaunch';
 import { createIncrementalSync } from './incrementalSync';
 import { localLaunchKey, resolveLocalPython } from './localPython';
 import { artifactPath, mapProjectPath } from './paths';
-import { registerProjectSync } from './projectSync';
+import { chooseConflict, registerProjectSync } from './projectSync';
 import { registerSaveUploads } from './saveUploads';
 import {
   ProjectTransfer,
@@ -20,17 +20,21 @@ import {
   downloadResults,
   requireSavedProjectFiles,
   sourceIgnored,
-  syncSource,
 } from './transfers';
 import { connectSsh, resolveTarget } from './targets';
 import { SessionTerminal, TerminalPanel } from './terminal';
 import {
   configuredScript,
+  isProxy,
   isRemotePython,
   isSyncMode,
+  isSyncPolicy,
   launchSyncMode,
+  proxyEnvironment,
   readSettings,
   settingsFile,
+  type SyncPolicy,
+  uploadPolicyFor,
   validateLaunchArguments,
 } from './settings';
 import { Execution, Outcome, rerunTokenKey } from './sessionState';
@@ -44,6 +48,9 @@ interface RemoteLaunch extends ProjectTransfer {
   remotePython: string;
   outputs: string[];
   syncMode: ReturnType<typeof launchSyncMode>;
+  syncPolicy: SyncPolicy;
+  uploadPolicy: SyncPolicy;
+  deleteRemoteOnUpload: boolean;
   uploadOnSave: boolean;
   launch: vscode.DebugConfiguration;
 }
@@ -61,10 +68,12 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<RemoteLaunch
   }
   if (
     requested.syncBeforeLaunch !== undefined ||
-    (requested.syncMode !== undefined && !isSyncMode(requested.syncMode))
+    (requested.syncMode !== undefined && !isSyncMode(requested.syncMode)) ||
+    (requested.syncPolicy !== undefined && !isSyncPolicy(requested.syncPolicy)) ||
+    (requested.uploadPolicy !== undefined && !isSyncPolicy(requested.uploadPolicy))
   ) {
     throw new Error(
-      'Set syncMode to "incremental", "full" or "off" in the RunHop launch configuration.'
+      'Set syncMode to "incremental", "full" or "off" and uploadPolicy to "safe", "force_upload", "force_download" or "interactive" in the RunHop launch configuration.'
     );
   }
   if (requested.program !== undefined && typeof requested.program !== 'string') {
@@ -98,7 +107,12 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<RemoteLaunch
     ...requested,
     program,
   };
+  if (launch.proxy !== undefined && !isProxy(launch.proxy)) {
+    throw new Error('proxy must be a non-empty proxy URL in the RunHop launch configuration.');
+  }
+  launch.env = { ...(launch.env || {}), ...proxyEnvironment(launch.proxy ?? settings.proxy) };
   const syncMode = launchSyncMode(settings, launch.syncMode);
+  const syncPolicy = uploadPolicyFor(settings, launch.uploadPolicy, launch.syncPolicy);
   const cwd = launch.cwd ? path.resolve(root.fsPath, launch.cwd) : undefined;
   if (Boolean(program) === Boolean(launch.module)) {
     throw new Error('Specify either a local Python program or a module name.');
@@ -159,6 +173,9 @@ async function resolveLaunch(session: vscode.DebugSession): Promise<RemoteLaunch
     remotePython,
     outputs,
     syncMode,
+    syncPolicy,
+    uploadPolicy: syncPolicy,
+    deleteRemoteOnUpload: settings.deleteRemoteOnUpload === true,
     uploadOnSave: settings.uploadOnSave !== false,
     launch,
   };
@@ -256,7 +273,7 @@ export function registerLaunch(
 
   const incremental = createIncrementalSync(context.storageUri ?? context.globalStorageUri);
   const uploads = registerSaveUploads(context, log, queueTransfer, excludeOutputs, incremental);
-  registerProjectSync(context, log, queueTransfer, excludeOutputs, uploads.clearFailures);
+  registerProjectSync(context, log, queueTransfer, excludeOutputs, uploads.clearFailures, incremental);
   registerControls(context, log, debugType, panel, activeConfigurationProject);
   registerFileLaunch(context, debugType);
   context.subscriptions.push(
@@ -339,6 +356,7 @@ export function registerLaunch(
               cwd: plan.cwd,
               program: plan.program ?? plan.module,
             });
+            terminal.write('$ ' + displayCommandFor(plan) + '\n');
             log.appendLine('Starting ' + name);
             if (direct) return bindAdapter(new DirectRun(undefined, plan, terminal, log));
             const helper = await prepareLocalDebugger(
@@ -365,10 +383,28 @@ export function registerLaunch(
             terminal.showActivity('Waiting to sync project files to ' + config.host + '…');
             await queueTransfer(key, async () => {
               checkCancelled();
-              await syncSource(project, excludeOutputs(key, outputs), {
-                cancellation: run.cancellation.token,
-                onStatus: message => terminal.showActivity(message),
-              });
+              const result = await incremental.sync(
+                project,
+                excludeOutputs(key, outputs),
+                remotePython,
+                run.cancellation.token,
+                message => terminal.showActivity(message),
+                undefined,
+                {
+                  policy: project.uploadPolicy,
+                  deleteRemoteOnUpload: project.deleteRemoteOnUpload,
+                  resolveConflict:
+                    (project.uploadPolicy === 'safe' || project.uploadPolicy === 'interactive')
+                      ? conflict => chooseConflict(project, conflict)
+                      : undefined,
+                }
+              );
+              if (result.conflicts.length) {
+                throw new Error(
+                  'Unresolved sync conflicts: ' +
+                    result.conflicts.map(conflict => conflict.file).join(', ')
+                );
+              }
               uploads.clearFailures(workspace, key);
             });
           } else {
@@ -376,28 +412,48 @@ export function registerLaunch(
               await uploads.wait(workspace, key);
             }
             if (project.syncMode === 'incremental') {
-              await queueTransfer(key, async () => {
-                checkCancelled();
-                const { uploaded, restored } = await incremental.sync(
-                  project,
-                  excludeOutputs(key, outputs),
-                  remotePython,
-                  run.cancellation.token,
-                  message => terminal.showActivity(message)
-                );
-                if (restored) {
-                  terminal.write(
-                    '[RunHop] Restored ' +
-                      restored +
-                      ' missing remote file(s) from saved local source.\n'
+              const changedFiles = uploads.changedFiles(workspace, project.service.baseDir);
+              const hasBaseline = await incremental.hasBaseline(project);
+              if (changedFiles.length || !hasBaseline) {
+                await queueTransfer(key, async () => {
+                  checkCancelled();
+                  const result = await incremental.sync(
+                    project,
+                    excludeOutputs(key, outputs),
+                    remotePython,
+                    run.cancellation.token,
+                    message => terminal.showActivity(message),
+                    hasBaseline ? changedFiles : undefined,
+                    {
+                      policy: project.uploadPolicy,
+                      deleteRemoteOnUpload: project.deleteRemoteOnUpload,
+                      resolveConflict:
+                        (project.uploadPolicy === 'safe' || project.uploadPolicy === 'interactive')
+                          ? conflict => chooseConflict(project, conflict)
+                          : undefined,
+                    }
                   );
-                }
-                if (uploaded) {
-                  log.appendLine(
-                    'RunHop: Uploaded ' + uploaded + ' changed project file(s) to ' + config.host
-                  );
-                }
-              });
+                  if (result.conflicts.length) {
+                    throw new Error(
+                      'Unresolved sync conflicts: ' +
+                        result.conflicts.map(conflict => conflict.file).join(', ')
+                    );
+                  }
+                  const { uploaded, restored } = result;
+                  if (restored) {
+                    terminal.write(
+                      '[RunHop] Restored ' +
+                        restored +
+                        ' missing remote file(s) from saved local source.\n'
+                    );
+                  }
+                  if (uploaded) {
+                    log.appendLine(
+                      'RunHop: Uploaded ' + uploaded + ' changed project file(s) to ' + config.host
+                    );
+                  }
+                });
+              }
             }
           }
           checkCancelled();
@@ -419,6 +475,7 @@ export function registerLaunch(
           };
           execution.cwd = args.cwd;
           checkCancelled();
+          terminal.write('$ ' + displayCommandFor(args) + '\n');
           const raw = client.getRawClient();
           log.appendLine('Starting ' + name + ' on ' + config.host);
           let adapter: SessionAdapter;

@@ -5,7 +5,12 @@ import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import type { AdapterLaunch } from './adapter';
 import { isLocalPathAtOrUnder } from './paths';
-import { readSettings, scriptLaunchOptions, validateLaunchArguments } from './settings';
+import {
+  proxyEnvironment,
+  readSettings,
+  scriptLaunchOptions,
+  validateLaunchArguments,
+} from './settings';
 
 export const localLaunchKey = 'runhopLocal';
 const exec = promisify(execFile);
@@ -163,7 +168,7 @@ export async function resolveLocalPython(
     program,
     module,
     args: options.args ?? [],
-    env: options.env ?? {},
+    env: { ...(options.env ?? {}), ...proxyEnvironment(options.proxy ?? settings.proxy) },
     justMyCode: options.justMyCode !== false,
     stopOnEntry: debug && options.stopOnEntry === true,
   };

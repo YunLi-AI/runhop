@@ -21,10 +21,13 @@ export interface ScriptOptions {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  proxy?: string;
   download?: string[];
   justMyCode?: boolean;
   stopOnEntry?: boolean;
+  uploadPolicy?: UploadPolicy;
   syncMode?: SyncMode;
+  syncPolicy?: SyncPolicy;
 }
 
 export type RunConfiguration = ScriptOptions &
@@ -36,19 +39,62 @@ export interface Settings {
   defaultInterpreter?: string;
   syncMode?: SyncMode;
   uploadOnSave?: boolean;
+  deleteRemoteOnUpload?: boolean;
   scripts?: Record<string, ScriptOptions>;
   runConfigurations?: Record<string, RunConfiguration>;
   activeRunConfiguration?: string;
+  uploadPolicy?: UploadPolicy;
+  syncPolicy?: SyncPolicy;
+  proxy?: string;
 }
 
 export type SyncMode = 'incremental' | 'full' | 'off';
+export type UploadPolicy = 'safe' | 'force_upload' | 'force_download' | 'interactive';
+export type SyncPolicy = UploadPolicy;
 
 export function isSyncMode(value: unknown): value is SyncMode {
   return value === 'incremental' || value === 'full' || value === 'off';
 }
 
+export function isUploadPolicy(value: unknown): value is UploadPolicy {
+  return (
+    value === 'safe' ||
+    value === 'force_upload' ||
+    value === 'force_download' ||
+    value === 'interactive'
+  );
+}
+
+export function isSyncPolicy(value: unknown): value is SyncPolicy {
+  return isUploadPolicy(value);
+}
+
+export function isProxy(value: unknown): value is string {
+  return typeof value === 'string' && Boolean(value.trim()) && !/[\0\r\n]/.test(value);
+}
+
+export function proxyEnvironment(proxy: unknown): Record<string, string> {
+  if (!isProxy(proxy)) return {};
+  return {
+    HTTP_PROXY: proxy,
+    HTTPS_PROXY: proxy,
+    ALL_PROXY: proxy,
+    http_proxy: proxy,
+    https_proxy: proxy,
+    all_proxy: proxy,
+  };
+}
+
 export function launchSyncMode(settings: Settings, override?: SyncMode): SyncMode {
   return override ?? settings.syncMode ?? 'incremental';
+}
+
+export function uploadPolicyFor(
+  settings: Settings,
+  override?: UploadPolicy,
+  legacyOverride?: SyncPolicy
+): UploadPolicy {
+  return override ?? legacyOverride ?? settings.uploadPolicy ?? settings.syncPolicy ?? 'safe';
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,8 +126,28 @@ export function parseSettings(text: string): Settings {
   if (raw.syncMode !== undefined && !isSyncMode(raw.syncMode)) {
     throw new Error('syncMode must be "incremental", "full" or "off" in ' + settingsFile + '.');
   }
+  if (raw.syncPolicy !== undefined && !isSyncPolicy(raw.syncPolicy)) {
+    throw new Error(
+      'syncPolicy must be "safe", "force_upload", "force_download" or "interactive" in ' +
+        settingsFile +
+        '.'
+    );
+  }
+  if (raw.uploadPolicy !== undefined && !isUploadPolicy(raw.uploadPolicy)) {
+    throw new Error(
+      'uploadPolicy must be "safe", "force_upload", "force_download" or "interactive" in ' +
+        settingsFile +
+        '.'
+    );
+  }
+  if (raw.proxy !== undefined && !isProxy(raw.proxy)) {
+    throw new Error('proxy must be a non-empty proxy URL in ' + settingsFile + '.');
+  }
   if (raw.uploadOnSave !== undefined && typeof raw.uploadOnSave !== 'boolean') {
     throw new Error('uploadOnSave must be true or false in ' + settingsFile + '.');
+  }
+  if (raw.deleteRemoteOnUpload !== undefined && typeof raw.deleteRemoteOnUpload !== 'boolean') {
+    throw new Error('deleteRemoteOnUpload must be true or false in ' + settingsFile + '.');
   }
   if (
     (raw.interpreters !== undefined && !isRecord(raw.interpreters)) ||
@@ -150,8 +216,11 @@ export function optionsFor(settings: Settings, key: string): ScriptOptions {
     !validRunLocation(options.runOn) ||
     !validLocalPython(options.localPython) ||
     (options.interpreter !== undefined && typeof options.interpreter !== 'string') ||
+    (options.proxy !== undefined && !isProxy(options.proxy)) ||
+    (options.uploadPolicy !== undefined && !isUploadPolicy(options.uploadPolicy)) ||
     options.syncBeforeLaunch !== undefined ||
-    (options.syncMode !== undefined && !isSyncMode(options.syncMode))
+    (options.syncMode !== undefined && !isSyncMode(options.syncMode)) ||
+    (options.syncPolicy !== undefined && !isSyncPolicy(options.syncPolicy))
   ) {
     throw new Error('Invalid RunHop script settings for ' + key + '.');
   }
@@ -179,13 +248,16 @@ export function runConfigurationFor(settings: Settings, name: string): RunConfig
     !validLocalPython(config.localPython) ||
     (config.cwd !== undefined && (typeof config.cwd !== 'string' || config.cwd.includes('\0'))) ||
     (config.interpreter !== undefined && typeof config.interpreter !== 'string') ||
+    (config.proxy !== undefined && !isProxy(config.proxy)) ||
+    (config.uploadPolicy !== undefined && !isUploadPolicy(config.uploadPolicy)) ||
     config.syncBeforeLaunch !== undefined ||
-    (config.syncMode !== undefined && !isSyncMode(config.syncMode))
+    (config.syncMode !== undefined && !isSyncMode(config.syncMode)) ||
+    (config.syncPolicy !== undefined && !isSyncPolicy(config.syncPolicy))
   ) {
     throw new Error(
       'Invalid RunHop run configuration ' +
         name +
-        '. Check its script or module, runOn, interpreter, localPython, cwd and syncMode.'
+        '. Check its script or module, runOn, interpreter, localPython, cwd, syncMode and syncPolicy.'
     );
   }
   return config;
@@ -225,14 +297,7 @@ export function scriptLaunchOptions(
   const saved = name === undefined ? undefined : runConfigurationFor(settings, name);
   const program = saved ? saved.program && path.resolve(workspace, saved.program) : file;
   const source = program ? optionsFor(settings, scriptKey(workspace, program)) : {};
-  const options = saved
-    ? {
-        ...saved,
-        runOn: saved.runOn ?? source.runOn,
-        interpreter: saved.interpreter ?? source.interpreter,
-        localPython: saved.localPython ?? source.localPython,
-      }
-    : source;
+  const options = saved ? { ...source, ...saved } : source;
   return { program, options, ...(saved?.module ? { module: saved.module } : {}) };
 }
 

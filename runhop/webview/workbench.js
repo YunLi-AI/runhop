@@ -546,11 +546,11 @@ export function mountWorkbench(vscode, outputVisibility, executionCommand) {
   }
   $('debug-copy').addEventListener('click', () => {
     if (state) dispatch(selectedOutput === 'console' ? 'copyConsole' : 'copyOutput');
-    else executionCommand('copyRunOutput', execution?.id);
+    else executionCommand('copyRunOutput', execution?.id, execution?.executionId);
   });
   $('debug-clear').addEventListener('click', () => {
     if (state) dispatch(selectedOutput === 'console' ? 'clearConsole' : 'clearOutput');
-    else executionCommand('clearRunOutput', execution?.id);
+    else executionCommand('clearRunOutput', execution?.id, execution?.executionId);
   });
   $('debug-console-form').addEventListener('submit', event => {
     event.preventDefault();

@@ -1,6 +1,7 @@
 import * as path from 'path';
-import { lstat, realpath } from 'fs/promises';
+import { lstat, mkdtemp, realpath, rm } from 'fs/promises';
 import type { Stats } from 'fs';
+import { tmpdir } from 'node:os';
 import { FileService, FileType, TransferTask, isNotFoundError } from './transport/core';
 import { createBackupHook } from './transport/core/backup';
 import { clearLocalHashCache, ContentHasher } from './transport/core/contentHash';
@@ -376,11 +377,13 @@ export async function uploadSourceFiles(
     showProgress = true,
     onStatus,
     publish,
+    captureSource,
   }: {
     cancellation?: vscode.CancellationToken;
     showProgress?: boolean;
     onStatus?: ReportStatus;
     publish?: (local: string, staging: string, destination: string) => Promise<void>;
+    captureSource?: (local: string, snapshot: string) => Promise<void>;
   } = {}
 ): Promise<number> {
   if (!files.length) {
@@ -411,7 +414,8 @@ export async function uploadSourceFiles(
   if (!sources.length) {
     return 0;
   }
-  await transferBatch(
+  const snapshots = captureSource && (await mkdtemp(path.join(tmpdir(), 'runhop-upload-')));
+  return transferBatch(
     project,
     showProgress ? 'RunHop: Uploading changed files · ' + config.host : 'RunHop: Upload on save',
     async (enqueue, cancelled, show) => {
@@ -427,7 +431,7 @@ export async function uploadSourceFiles(
       const beforeOverwrite = createBackupHook({ ...config, remotePath: root }, service.baseDir);
       const checked = new Set<string>();
       const folders = new Set([root]);
-      for (const { file, stat } of sources) {
+      for (const [index, { file, stat }] of sources.entries()) {
         if (cancelled()) {
           return;
         }
@@ -457,10 +461,12 @@ export async function uploadSourceFiles(
           await remote.ensureDir(directory);
           folders.add(directory);
         }
+        const readPath = snapshots && path.join(snapshots, String(index));
+        if (readPath) await captureSource!(file, readPath);
         // Read the last saved version from disk, without saving an open editor.
         enqueue(
           new TransferTask(
-            { fsPath: file, fileSystem: service.getLocalFileSystem() },
+            { fsPath: file, fileSystem: service.getLocalFileSystem(), readPath },
             { fsPath: destination, fileSystem: remote },
             {
               transferDirection: TransferDirection.LOCAL_TO_REMOTE,
@@ -494,8 +500,11 @@ export async function uploadSourceFiles(
           onStatus,
         }
       : undefined
-  );
-  return sources.length;
+  )
+    .then(() => sources.length)
+    .finally(async () => {
+      if (snapshots) await rm(snapshots, { recursive: true, force: true });
+    });
 }
 
 export async function uploadSavedFile(

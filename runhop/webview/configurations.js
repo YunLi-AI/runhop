@@ -36,6 +36,12 @@ const modes = [
   ['full', 'Project Scan'],
   ['off', 'Off'],
 ];
+const policies = [
+  ['safe', 'Safe'],
+  ['force_upload', 'Force Upload'],
+  ['force_download', 'Force Download'],
+  ['interactive', 'Interactive'],
+];
 let snapshot;
 let newerSnapshot;
 let section = 'run';
@@ -692,6 +698,13 @@ function runEditor(form) {
     row(deployment, 'syncMode', 'Sync Before Launch', 'select', {
       options: [['', t('Use project default')], ...localizedOptions(modes)],
     });
+    row(execution, 'proxy', 'Launch Proxy', 'input', {
+      hint: 'Injected as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY before Python starts.',
+      placeholder: 'http://127.0.0.1:7890',
+    });
+    row(deployment, 'uploadPolicy', 'Sync Conflict Policy', 'select', {
+      options: [['', t('Use project default')], ...localizedOptions(policies)],
+    });
     row(deployment, 'download', 'Download Results', 'textarea', {
       rows: 2,
       hint: 'One remote project-relative file or folder per line.',
@@ -826,6 +839,14 @@ function syncEditor(form) {
   if (draft.key === 'project') {
     const policy = formGroup(form, 'Upload Policy');
     row(policy, 'syncMode', 'Sync Before Launch', 'select', { options: localizedOptions(modes) });
+    row(policy, 'uploadPolicy', 'Sync Conflict Policy', 'select', {
+      options: localizedOptions(policies),
+    });
+    row(policy, 'proxy', 'Launch Proxy', 'input', {
+      hint: 'Injected as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY before Python starts.',
+      placeholder: 'http://127.0.0.1:7890',
+    });
+    check(policy, 'deleteRemoteOnUpload', 'Delete remote files when local files are deleted');
     check(policy, 'uploadOnSave', 'Automatically upload eligible local file changes');
     policy.append(
       node(

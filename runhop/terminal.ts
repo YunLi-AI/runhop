@@ -403,6 +403,7 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
     id?: number;
     executionId?: string;
     data?: string;
+    text?: string;
     cols?: number;
     rows?: number;
     intent?: unknown;
@@ -494,8 +495,14 @@ export class TerminalPanel implements vscode.WebviewViewProvider, vscode.Disposa
         break;
       }
       case 'copyRunOutput':
-        if (session?.execution && message.id === session.id) {
-          void vscode.env.clipboard.writeText(stripVTControlCharacters(session.history));
+        if (
+          session?.execution &&
+          message.id === session.id &&
+          message.executionId === session.execution.id
+        ) {
+          void vscode.env.clipboard.writeText(
+            stripVTControlCharacters(message.text ?? session.history)
+          );
         }
         break;
       case 'clearRunOutput':

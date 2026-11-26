@@ -14,6 +14,8 @@ import {
   isPythonModule,
   isRecord,
   isSyncMode,
+  isSyncPolicy,
+  isUploadPolicy,
   scriptKey,
 } from './settings';
 import { matchingTargets, resolveProjectTarget, resolveTarget } from './targets';
@@ -44,6 +46,8 @@ const text = (value: unknown, fallback = '') => (typeof value === 'string' ? val
 const lines = (value: unknown) =>
   Array.isArray(value) ? value.filter(item => typeof item === 'string').join('\n') : '';
 const syncRows = (value: unknown) => (isSyncMode(value) ? value : '');
+const uploadPolicyRows = (value: unknown) =>
+  isUploadPolicy(value) ? value : isSyncPolicy(value) ? value : '';
 const interpolatableEnvName = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 function scriptValues(script: unknown, active: boolean) {
@@ -61,8 +65,10 @@ function scriptValues(script: unknown, active: boolean) {
       Array.isArray(raw.args) ? raw.args.filter(v => typeof v === 'string') : []
     ),
     env: isRecord(raw.env) ? Object.keys(raw.env).map(name => ({ name, original: name })) : [],
+    proxy: text(raw.proxy),
     download: lines(raw.download),
     syncMode: syncRows(raw.syncMode),
+    uploadPolicy: uploadPolicyRows(raw.uploadPolicy ?? raw.syncPolicy),
     justMyCode: raw.justMyCode !== false,
     stopOnEntry: raw.stopOnEntry === true,
     active,
@@ -154,6 +160,9 @@ export function configurationRows(
         label: 'Project defaults',
         values: {
           syncMode: settings.syncMode ?? 'incremental',
+          uploadPolicy: settings.uploadPolicy ?? settings.syncPolicy ?? 'safe',
+          proxy: settings.proxy ?? '',
+          deleteRemoteOnUpload: settings.deleteRemoteOnUpload === true,
           uploadOnSave: settings.uploadOnSave !== false,
         },
       },
@@ -312,6 +321,12 @@ function syncMode(value: string, optional = false) {
   return value;
 }
 
+function uploadPolicy(value: string, optional = false) {
+  if (optional && !value) return undefined;
+  if (!isUploadPolicy(value)) throw new Error('Choose a valid synchronization policy.');
+  return value;
+}
+
 export function makeServer(
   settings: Settings,
   key: string,
@@ -463,8 +478,10 @@ export async function configurationEdits(
       cwd: cwd ? scriptKey(workspace, cwd) || '.' : undefined,
       args: parseArguments(field(fields, 'args')),
       env: environment(fields, 'env' in original ? original.env : undefined),
+      proxy: pathField(fields, 'proxy'),
       download: field(fields, 'download').split(/\r?\n/).filter(Boolean).map(artifactPath),
       syncMode: syncMode(field(fields, 'syncMode'), true),
+      uploadPolicy: uploadPolicy(field(fields, 'uploadPolicy'), true),
       justMyCode: flag(fields, 'justMyCode', true),
       stopOnEntry: flag(fields, 'stopOnEntry'),
     };
@@ -568,6 +585,16 @@ export async function configurationEdits(
       key,
       edits: [
         { at: ['syncMode'], value: syncMode(field(fields, 'syncMode')) },
+        {
+          at: ['uploadPolicy'],
+          value:
+            uploadPolicy(field(fields, 'uploadPolicy'), true) ??
+            settings.uploadPolicy ??
+            settings.syncPolicy ??
+            'safe',
+        },
+        { at: ['proxy'], value: pathField(fields, 'proxy') },
+        { at: ['deleteRemoteOnUpload'], value: flag(fields, 'deleteRemoteOnUpload', false) },
         { at: ['uploadOnSave'], value: flag(fields, 'uploadOnSave', true) },
       ],
     };

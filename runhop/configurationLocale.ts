@@ -100,6 +100,9 @@ const chinese: Record<string, string> = {
   'Program Arguments': '脚本参数',
   'Quote arguments that contain spaces.': '请为含空格的参数加上引号。',
   'Working Directory': '工作目录',
+  'Launch Proxy': '启动代理',
+  'Injected as HTTP_PROXY, HTTPS_PROXY and ALL_PROXY before Python starts.':
+    '启动 Python 前注入 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY。',
   'Local directory mapped to the server for remote runs.':
     '远程运行时，此本地目录会映射到服务器上的对应目录。',
   'Environment Variables': '环境变量',
@@ -111,6 +114,11 @@ const chinese: Record<string, string> = {
   'Add Variable': '添加变量',
   Deployment: '部署',
   'Sync Before Launch': '启动前同步',
+  'Sync Conflict Policy': '同步冲突策略',
+  Safe: '安全模式',
+  'Force Upload': '强制上传',
+  'Force Download': '强制下载',
+  Interactive: '交互选择',
   'Use project default': '使用项目默认设置',
   'Changed Files': '仅同步变更',
   'Project Scan': '扫描项目',
@@ -175,6 +183,7 @@ const chinese: Record<string, string> = {
   'Use as the default remote interpreter': '设为默认远程解释器',
   'Upload Policy': '上传策略',
   'Automatically upload eligible local file changes': '自动上传符合规则的本地文件改动',
+  'Delete remote files when local files are deleted': '本地文件删除时同步删除远端文件',
   'Changed Files deploys once, then uploads local changes. Project Scan compares files at every launch. Off skips launch sync.':
     '「仅同步变更」首次部署后只上传本地改动。「扫描项目」每次启动时比较文件。「关闭」会跳过启动前同步。',
   'Path Mapping': '路径映射',

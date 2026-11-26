@@ -12,12 +12,18 @@ import { Outcome, exitOutcome } from './sessionState';
 
 declare const RUNHOP_RUN_SUPERVISOR: string;
 
-function commandFor(plan: PythonLaunch, token: string): string {
+export function displayCommandFor(plan: PythonLaunch): string {
   const environment = Object.entries(plan.env).map(([name, value]) => name + '=' + value);
   const entry = plan.program ? [plan.program] : ['-m', plan.module!];
   const python = [plan.python, '-u', ...entry, ...plan.args];
+  return 'cd ' + quoteShell(plan.cwd) + ' && exec env -- ' + [...environment, ...python].map(quoteShell).join(' ');
+}
+
+function commandFor(plan: PythonLaunch, token: string): string {
+  const entry = plan.program ? [plan.program] : ['-m', plan.module!];
+  const python = [plan.python, '-u', ...entry, ...plan.args];
   const invocation = [
-    ...environment,
+    ...Object.entries(plan.env).map(([name, value]) => name + '=' + value),
     plan.python,
     '-I',
     '-S',
@@ -99,7 +105,7 @@ export class DirectRun implements SessionAdapter {
       let buffer = '';
       let pidSeen = false;
       const marker = new RegExp('\x1eRUNHOP_PID:' + token + ':(\\d+)\\r?\\n');
-      const writeStderr = (text: string) => {
+      const writeRemote = (text: string) => {
         if (pidSeen) {
           this.terminal.write(text);
           return;
@@ -116,8 +122,8 @@ export class DirectRun implements SessionAdapter {
           buffer = buffer.slice(-100);
         }
       };
-      const data = (chunk: Buffer) => this.terminal.write(stdout.write(chunk));
-      const errorData = (chunk: Buffer) => writeStderr(stderr.write(chunk));
+      const data = (chunk: Buffer) => writeRemote(stdout.write(chunk));
+      const errorData = (chunk: Buffer) => writeRemote(stderr.write(chunk));
       const exit = (code: number | null, signal?: string) => {
         exitCode = code ?? (signal === 'SIGTERM' ? 143 : signal === 'SIGKILL' ? 137 : undefined);
       };
@@ -128,7 +134,7 @@ export class DirectRun implements SessionAdapter {
       };
       const close = () => {
         this.terminal.write(stdout.end());
-        writeStderr(stderr.end());
+        writeRemote(stderr.end());
         this.terminal.write(buffer);
         this.finish(
           exitCode === undefined
@@ -165,31 +171,11 @@ export class DirectRun implements SessionAdapter {
   private launchLocal(request: DebugMessage): void {
     const entry = this.plan.program ? [this.plan.program] : ['-m', this.plan.module!];
     const child = spawnPython(this.plan, ['-u', ...entry, ...this.plan.args]);
-    const execution = this.terminal.execution;
-    const closeInput = () => {
-      if (execution?.input) {
-        execution.input = undefined;
-        this.terminal.refresh();
-      }
-    };
-    child.stdin.on('error', closeInput);
-    child.stdin.once('close', closeInput);
+    child.stdin.on('error', ignoreLateInputError);
     child.stdout.setEncoding('utf8').on('data', text => this.terminal.write(text));
     child.stderr.setEncoding('utf8').on('data', text => this.terminal.write(text));
     this.stopLocal = () => stopLocalProcess(child);
     child.once('spawn', () => {
-      if (!this.stopping && execution && child.stdin.writable) {
-        execution.input = line => {
-          if (line === null) {
-            closeInput();
-            child.stdin.end();
-          } else if (child.stdin.writableNeedDrain) {
-            this.terminal.write('\n[RunHop] Program input is busy. Try sending it again.\n');
-          } else if (child.stdin.writable) {
-            child.stdin.write(line + '\n');
-          }
-        };
-      }
       this.terminal.update(this.stopping ? 'Stopping' : 'Running', child.pid);
       this.respond(request);
     });
@@ -281,3 +267,4 @@ export class DirectRun implements SessionAdapter {
 }
 
 function ignoreLateChannelError(): void {}
+function ignoreLateInputError(): void {}

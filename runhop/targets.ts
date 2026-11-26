@@ -42,7 +42,11 @@ export async function configure(requestedFolder?: vscode.WorkspaceFolder): Promi
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(
       file,
-      JSON.stringify({ targets, syncMode: 'incremental', uploadOnSave: true }, null, 2) + '\n',
+      JSON.stringify(
+        { targets, syncMode: 'incremental', uploadPolicy: 'safe', uploadOnSave: true },
+        null,
+        2
+      ) + '\n',
       { flag: 'wx' }
     ).catch(error => {
       if (error.code !== 'EEXIST') {

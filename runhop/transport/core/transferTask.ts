@@ -18,6 +18,7 @@ export enum TransferDirection {
 interface FileHandle {
   fsPath: string;
   fileSystem: FileSystem;
+  readPath?: string;
 }
 
 export interface TransferOption {
@@ -123,6 +124,7 @@ export function isRetryable(error: any): boolean {
 
 export default class TransferTask implements Task {
   private readonly _srcFsPath: string;
+  private readonly _sourceReadPath: string;
   private readonly _targetFsPath: string;
   private _srcFs: FileSystem;
   private _targetFs: FileSystem;
@@ -166,6 +168,7 @@ export default class TransferTask implements Task {
     }
   ) {
     this._srcFsPath = src.fsPath;
+    this._sourceReadPath = src.readPath ?? src.fsPath;
     this._targetFsPath = target.fsPath;
     this._srcFs = src.fileSystem;
     this._targetFs = target.fileSystem;
@@ -408,9 +411,9 @@ export default class TransferTask implements Task {
             concurrency: this._parallelChunkConcurrency(),
           };
           if (this._transferDirection === TransferDirection.REMOTE_TO_LOCAL) {
-            await source.getToFile(this._srcFsPath, staging, options);
+            await source.getToFile(this._sourceReadPath, staging, options);
           } else {
-            await target.putFromFile(this._srcFsPath, staging, options);
+            await target.putFromFile(this._sourceReadPath, staging, options);
           }
         } catch (error) {
           if (token.isCancellationRequested || FileSystem.isAbortedError(error)) {
@@ -519,7 +522,7 @@ export default class TransferTask implements Task {
   ) {
     const handle = await target.open(staging, 'w', mode);
     try {
-      const stream = await source.get(this._srcFsPath);
+      const stream = await source.get(this._sourceReadPath);
       if (token.isCancellationRequested) {
         stream.destroy();
         throw new CancellationError();

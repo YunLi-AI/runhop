@@ -1,4 +1,4 @@
-import { launchSyncMode, parseSettings } from '../settings';
+import { launchSyncMode, parseSettings, proxyEnvironment } from '../settings';
 
 describe('RunHop configuration', () => {
   const targets = [{ host: 'ssh-target', remotePath: '/opt/project' }];
@@ -17,5 +17,16 @@ describe('RunHop configuration', () => {
       /syncMode/
     );
     expect(() => parseSettings(JSON.stringify({ targets, syncMode: true }))).toThrow(/syncMode/);
+  });
+
+  test('accepts explicit conflict policies and maps a launch proxy to standard variables', () => {
+    const settings = parseSettings(
+      JSON.stringify({ targets, uploadPolicy: 'interactive', proxy: 'http://127.0.0.1:7890' })
+    );
+    expect(settings.uploadPolicy).toBe('interactive');
+    expect(proxyEnvironment(settings.proxy).HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+    expect(() => parseSettings(JSON.stringify({ targets, syncPolicy: 'overwrite' }))).toThrow(
+      /syncPolicy/
+    );
   });
 });

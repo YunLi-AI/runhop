@@ -67,7 +67,9 @@ Configure this project for RunHop without using VS Code Remote-SSH.
   },
   "defaultInterpreter": "REMOTE_INTERPRETER_NAME",
   "syncMode": "incremental",
+  "uploadPolicy": "safe",
   "uploadOnSave": true,
+  "proxy": "http://127.0.0.1:7890",
   "runConfigurations": {
     "MAIN_RUN": {
       "program": "scripts/train.py",
@@ -89,7 +91,15 @@ Configure this project for RunHop without using VS Code Remote-SSH.
 10. Validate the JSON, check that the selected program exists locally, and explain which RunHop configuration is active. Do not modify the local Conda environment and do not install dependencies on the remote server just to initialize RunHop.
 ```
 
+`uploadPolicy` controls conflicts between local and remote files. `safe` stops before an overwrite, `force_upload` replaces remote files with local files, `force_download` replaces local files with remote files, and `interactive` asks for each conflict. `proxy` is injected into the launched Python process through the standard HTTP and SOCKS proxy environment variables.
+
+After an external `scp` or terminal transfer, run **RunHop: Refresh Sync Baseline** from the project context menu. It records the current local and remote fingerprints and hashes without uploading or downloading files.
+
+Set `defaultInterpreter` for the project. A file entry under `scripts` can override the interpreter, arguments, working directory, environment, and debug options for one Python file. A named entry under `runConfigurations` can then be selected from the toolbar and takes precedence for that run.
+
 The same file is edited by **RunHop Configurations** and used by the RunHop Run and Debug commands. A missing `runhop.json` does not disable the extension. Create it when a remote run configuration is needed.
+
+Synchronization baselines are stored in the project at `.vscode/runhop-state/source-baselines/`. They contain file fingerprints and hashes only. Removing them resets the conflict history and causes the next synchronization to rebuild the baseline.
 
 ## Screenshot
 
@@ -114,7 +124,7 @@ Local VS Code
 
 ## What's Next?
 
-- A more complete PyCharm-style debugging experience
+- A more complete debug experience
 - Better debugging support for NumPy arrays and PyTorch tensors
 - Multiprocess and distributed Python debugging
 - **Agent-Friendly CLI** (planned) — Let Codex and other AI tools reuse configured remote execution environments without opening separate SSH sessions.
